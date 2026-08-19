@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awrelay"
+version = "0.1.0"
+description = "A portable client for AitherRelay-shaped agent messaging — findings, alerts and coordination between agents, over real chat channels a human can also read."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+# `awrelay watch` and the MCP server's push-based tools use a WebSocket
+# connection; the REST-only half (send/history/channels) needs nothing beyond
+# httpx.
+ws = ["websockets>=12.0"]
+
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21.0"]
+
+# `awrelay mcp` — serve agent messaging to any MCP coding agent over stdio.
+# Pinned to 2.x for the same reason awgraph pins it: the 1.x server API was
+# REMOVED in 2.0, and a version written for one raises AttributeError on the
+# other despite `mcp>=1.0` letting pip resolve 2.0 anyway.
+mcp = ["mcp>=2.0"]
+
+[project.scripts]
+awrelay = "awrelay.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Aitherium/awrelay"
+Documentation = "https://github.com/Aitherium/awrelay#readme"
+Repository = "https://github.com/Aitherium/awrelay.git"
+Issues = "https://github.com/Aitherium/awrelay/issues"
+
+[tool.setuptools]
+packages = ["awrelay"]
+license-files = ["LICENSE"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501", "E402", "E741"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

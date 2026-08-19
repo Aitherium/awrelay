@@ -1,0 +1,15 @@
+LICENSE
+README.md
+pyproject.toml
+awrelay/__init__.py
+awrelay/cli.py
+awrelay/client.py
+awrelay/envelope.py
+awrelay/mcp_server.py
+awrelay.egg-info/PKG-INFO
+awrelay.egg-info/SOURCES.txt
+awrelay.egg-info/dependency_links.txt
+awrelay.egg-info/entry_points.txt
+awrelay.egg-info/requires.txt
+awrelay.egg-info/top_level.txt
+tests/test_standalone.py
