@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1",
+  "name": "awrelay",
+  "description": "Portable agent messaging — findings, alerts, coordination.",
+  "url": "https://aitherium.github.io/awrelay/",
+  "repository": "https://github.com/Aitherium/awrelay",
+  "kind": "tool",
+  "status": "public",
+  "adopt": "Have one agent post a finding to a channel a human can also read.",
+  "pairs_with": [
+    "awgit",
+    "awdk"
+  ],
+  "includes": []
+}
