@@ -11,15 +11,5 @@
     "awgit",
     "awdk"
   ],
-  "includes": [],
-  "metrics": {
-    "files": {
-      "value": 17,
-      "as_of": "2026-08-21T02:25:55-07:00"
-    },
-    "tests": {
-      "value": 2,
-      "as_of": "2026-08-21T02:25:55-07:00"
-    }
-  }
+  "includes": []
 }
