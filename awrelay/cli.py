@@ -96,6 +96,158 @@ def _cmd_channels(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_thread_reply(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        result = client.reply_in_thread(args.channel, args.message_id, args.text)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result) if args.json else f"replied in thread {args.message_id}")
+    return 0
+
+
+def _cmd_thread_get(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        result = client.get_thread(args.channel, args.message_id)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result))
+        return 0
+    replies = result.get("replies", [])
+    if not replies:
+        print("(no replies)")
+        return 0
+    for r in replies:
+        print(f"{r.get('nick', '?')}: {r.get('content', '')}")
+    return 0
+
+
+def _cmd_threads(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        threads = client.list_threads(args.channel)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(threads))
+        return 0
+    if not threads:
+        print("(no threads)")
+        return 0
+    for t in threads:
+        print(f"{t.get('title', '(untitled)')} — {t.get('reply_count', 0)} replies")
+    return 0
+
+
+def _cmd_search(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        results = client.search(
+            args.query, channel=args.channel or "", workspace=args.workspace or ""
+        )
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(results))
+        return 0
+    if not results:
+        print("(no matches)")
+        return 0
+    for r in results:
+        print(f"{r.get('nick', '?')} [{r.get('channel', '?')}]: {r.get('content', '')}")
+    return 0
+
+
+def _cmd_unread(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        counts = client.unread_counts()
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(counts))
+    return 0
+
+
+def _cmd_mark_read(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        client.mark_read(args.channel)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    print(f"marked {args.channel} read")
+    return 0
+
+
+def _cmd_presence(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        online = client.presence(args.channel)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(online))
+        return 0
+    if not online:
+        print("(nobody currently connected)")
+        return 0
+    for u in online:
+        print(u.get("nick", "?"))
+    return 0
+
+
+def _cmd_react(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        client.react(args.channel, args.message_id, args.emoji)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    print(f"toggled {args.emoji} on {args.message_id}")
+    return 0
+
+
+def _cmd_pin(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        if args.unpin:
+            client.unpin(args.channel, args.message_id)
+            print(f"unpinned {args.message_id}")
+        else:
+            client.pin(args.channel, args.message_id)
+            print(f"pinned {args.message_id}")
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_pins(args: argparse.Namespace) -> int:
+    client = _client_from_args(args)
+    try:
+        pinned = client.pinned(args.channel)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(pinned))
+        return 0
+    if not pinned:
+        print("(no pinned messages)")
+        return 0
+    for p in pinned:
+        print(f"{p.get('nick', '?')}: {p.get('content', '')}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="awrelay", description=__doc__)
     ap.add_argument("--url", help="relay server origin (or AWRELAY_URL)")
@@ -123,12 +275,92 @@ def build_parser() -> argparse.ArgumentParser:
     p_chan = sub.add_parser("channels", help="list visible channels")
     p_chan.set_defaults(func=_cmd_channels)
 
+    p_treply = sub.add_parser(
+        "thread-reply", help="reply to a message, creating its thread if needed"
+    )
+    p_treply.add_argument("channel")
+    p_treply.add_argument("message_id")
+    p_treply.add_argument("text")
+    p_treply.set_defaults(func=_cmd_thread_reply)
+
+    p_tget = sub.add_parser("thread", help="show every reply under a message")
+    p_tget.add_argument("channel")
+    p_tget.add_argument("message_id")
+    p_tget.set_defaults(func=_cmd_thread_get)
+
+    p_threads = sub.add_parser("threads", help="list forum thread roots in a channel")
+    p_threads.add_argument("channel")
+    p_threads.set_defaults(func=_cmd_threads)
+
+    p_search = sub.add_parser("search", help="full-text search over message content")
+    p_search.add_argument("query")
+    p_search.add_argument("--channel", help="scope to one channel")
+    p_search.add_argument("--workspace", help="scope to one workspace")
+    p_search.set_defaults(func=_cmd_search)
+
+    p_unread = sub.add_parser("unread", help="unread counts per channel")
+    p_unread.set_defaults(func=_cmd_unread)
+
+    p_mark = sub.add_parser("mark-read", help="advance this nick's read cursor for a channel")
+    p_mark.add_argument("channel")
+    p_mark.set_defaults(func=_cmd_mark_read)
+
+    p_presence = sub.add_parser("presence", help="who is actually connected right now in a channel")
+    p_presence.add_argument("channel")
+    p_presence.set_defaults(func=_cmd_presence)
+
+    p_react = sub.add_parser("react", help="toggle an emoji reaction on a message")
+    p_react.add_argument("channel")
+    p_react.add_argument("message_id")
+    p_react.add_argument("emoji")
+    p_react.set_defaults(func=_cmd_react)
+
+    p_pin = sub.add_parser("pin", help="pin (or --unpin) a message — moderator-only server-side")
+    p_pin.add_argument("channel")
+    p_pin.add_argument("message_id")
+    p_pin.add_argument("--unpin", action="store_true")
+    p_pin.set_defaults(func=_cmd_pin)
+
+    p_pins = sub.add_parser("pins", help="list pinned messages in a channel")
+    p_pins.add_argument("channel")
+    p_pins.set_defaults(func=_cmd_pins)
+
     sub.add_parser("mcp", help="serve over MCP stdio for a coding agent")
 
     return ap
 
 
+def _force_utf8_stdio() -> None:
+    """Make the console tolerate the emoji this relay actually carries.
+
+    Windows consoles default to cp1252, and `print()` of any character outside
+    it raises UnicodeEncodeError -- which aborts the command with a traceback
+    AFTER the network round-trip has already succeeded. Measured 2026-08-19:
+    `awrelay history '#playground'` fetched the channel fine and then died on
+    a moon emoji, so a working relay read like a broken one.
+
+    That is not an exotic input here: the relay's own announcements are full of
+    them (announce lines lead with a play triangle, a trophy, a moon, a brain),
+    so on Windows `history` was unusable on any channel a service posts to.
+
+    errors="replace" rather than a narrower encoding: a message that cannot be
+    rendered should show a replacement glyph, never cost the reader the other
+    twenty messages in the buffer.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:      # not a TextIOWrapper (piped/captured)
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # A stream that refuses reconfiguration is not worth failing the
+            # command over; the print below may still succeed.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdio()
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.command == "mcp":

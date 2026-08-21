@@ -134,3 +134,143 @@ def test_channels_unwraps_either_response_shape():
 
     client = _mock_client(handler)
     assert client.channels() == ["#a", "#b"]
+
+
+def test_reply_in_thread_posts_content_nick_agent():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"success": True, "reply": {"id": "r1"}})
+
+    client = _mock_client(handler)
+    result = client.reply_in_thread("#agent-lounge", "m1", "following up")
+
+    assert seen["url"].endswith("/v1/channels/%23agent-lounge/messages/m1/thread")
+    assert seen["body"] == {"content": "following up", "nick": "agent-a", "agent": True}
+    assert result["reply"]["id"] == "r1"
+
+
+def test_get_thread_returns_replies_and_info():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "parent_id": "m1", "thread_info": {"reply_count": 2}, "replies": [{"id": "r1"}],
+        })
+
+    client = _mock_client(handler)
+    result = client.get_thread("#agent-lounge", "m1")
+    assert result["thread_info"]["reply_count"] == 2
+    assert len(result["replies"]) == 1
+
+
+def test_list_threads_unwraps_either_shape():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"channel": "#board", "threads": [{"title": "t1"}]})
+
+    client = _mock_client(handler)
+    assert client.list_threads("#board") == [{"title": "t1"}]
+
+
+def test_create_thread_posts_title_content_nick():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"success": True})
+
+    client = _mock_client(handler)
+    client.create_thread("#board", "My Topic", "opening post")
+    assert seen["body"] == {
+        "title": "My Topic", "content": "opening post", "nick": "agent-a", "agent": True,
+    }
+
+
+def test_presence_unwraps_the_online_list():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).endswith("/v1/channels/%23agent-lounge/presence")
+        return httpx.Response(
+            200, json={"channel": "#agent-lounge", "online": [{"nick": "a"}], "count": 1}
+        )
+
+    client = _mock_client(handler)
+    assert client.presence("#agent-lounge") == [{"nick": "a"}]
+
+
+def test_react_posts_emoji_and_nick_to_the_real_toggle_route():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"success": True})
+
+    client = _mock_client(handler)
+    client.react("#agent-lounge", "m1", "+1")
+
+    assert seen["url"].endswith("/v1/channels/%23agent-lounge/messages/m1/react")
+    assert seen["body"] == {"emoji": "+1", "nick": "agent-a"}
+
+
+def test_search_rejects_empty_query_without_a_request():
+    client = _mock_client(lambda r: httpx.Response(200, json={"results": []}))
+    with pytest.raises(RelayError):
+        client.search("")
+
+
+def test_search_returns_results_list():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["q"] == "race condition"
+        return httpx.Response(
+            200, json={"query": "race condition", "results": [{"id": "m1"}], "count": 1}
+        )
+
+    client = _mock_client(handler)
+    assert client.search("race condition") == [{"id": "m1"}]
+
+
+def test_mark_read_posts_nick_as_param():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"success": True})
+
+    client = _mock_client(handler)
+    client.mark_read("#agent-lounge")
+    assert seen["params"]["nick"] == "agent-a"
+
+
+def test_unread_counts_returns_server_shape():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"#a": 3, "#b": 0})
+
+    client = _mock_client(handler)
+    assert client.unread_counts() == {"#a": 3, "#b": 0}
+
+
+def test_pin_and_unpin_hit_the_right_verb():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.method)
+        return httpx.Response(200, json={"success": True})
+
+    client = _mock_client(handler)
+    client.pin("#agent-lounge", "m1")
+    client.unpin("#agent-lounge", "m1")
+    assert seen == ["POST", "DELETE"]
+
+
+def test_pin_raises_relay_error_when_not_a_moderator():
+    client = _mock_client(lambda r: httpx.Response(403, text="Not authorized."))
+    with pytest.raises(RelayError):
+        client.pin("#agent-lounge", "m1")
+
+
+def test_pinned_unwraps_either_shape():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"pinned": [{"id": "m1"}]})
+
+    client = _mock_client(handler)
+    assert client.pinned("#agent-lounge") == [{"id": "m1"}]

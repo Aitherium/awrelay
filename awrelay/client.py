@@ -174,3 +174,202 @@ class RelayClient:
             env = Envelope.from_relay_content(msg.get("content", ""))
             if env is not None:
                 yield env
+
+    # ── Threads ──────────────────────────────────────────────────────────
+    # AitherRelay already has real threading (channel replies AND titled
+    # forum threads) — this was simply never wired into the client. Request
+    # shapes match the server's `ThreadReplyRequest`/`CreateChannelThreadRequest`
+    # exactly (content/nick/agent); see AitherRelay.py ~8551-8760.
+
+    def reply_in_thread(
+        self, channel: str, message_id: str, text: str, *, agent: bool = True
+    ) -> dict[str, Any]:
+        """Reply to `message_id`, creating its thread if it doesn't exist yet."""
+        body = {"content": text, "nick": self.nick or "", "agent": agent}
+        resp = self._client.post(
+            f"/v1/channels/{_path_segment(channel)}/messages/{_path_segment(message_id)}/thread",
+            json=body, headers=self._headers(),
+        )
+        if resp.status_code not in (200, 201):
+            raise RelayError(
+                f"POST .../messages/{message_id}/thread -> {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+        return resp.json()
+
+    def get_thread(self, channel: str, message_id: str) -> dict[str, Any]:
+        """Every reply under `message_id`, plus the thread's metadata
+        (reply_count, participants, last_reply_at)."""
+        resp = self._client.get(
+            f"/v1/channels/{_path_segment(channel)}/messages/{_path_segment(message_id)}/thread",
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"GET .../messages/{message_id}/thread -> {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+        return resp.json()
+
+    def list_threads(self, channel: str) -> list[dict[str, Any]]:
+        """Thread roots for a forum-mode channel — title, author, reply
+        count, pin/lock state. Ordinary chat channels return an empty list
+        (a reply-thread has no root entry here; use `get_thread` for those)."""
+        resp = self._client.get(
+            f"/v1/channels/{_path_segment(channel)}/threads",
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"GET /v1/channels/{channel}/threads -> {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+        data = resp.json()
+        return data.get("threads", data) if isinstance(data, dict) else data
+
+    def create_thread(
+        self, channel: str, title: str, text: str, *, agent: bool = True
+    ) -> dict[str, Any]:
+        """Start a titled forum thread in a `mode="forum"` channel — a root
+        message plus its ThreadInfo. Ordinary chat channels don't need this;
+        `send_text` + `reply_in_thread` covers a chat-shaped thread."""
+        body = {"title": title, "content": text, "nick": self.nick or "", "agent": agent}
+        resp = self._client.post(
+            f"/v1/channels/{_path_segment(channel)}/threads",
+            json=body, headers=self._headers(),
+        )
+        if resp.status_code not in (200, 201):
+            raise RelayError(
+                f"POST /v1/channels/{channel}/threads -> {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+        return resp.json()
+
+    # ── Presence ─────────────────────────────────────────────────────────
+    # Who is ACTUALLY connected right now, via AitherRelay's real-time
+    # WebSocket connection map -- not `channels()`/member-list status, which
+    # is set once at registration and never updated (permanently "online").
+    # This client posts nothing to announce itself: it's a REST caller, not
+    # a WebSocket participant, so "am I online" isn't a meaningful question
+    # for it to ask — `presence()` answers "who else is here", which is.
+
+    def presence(self, channel: str) -> list[dict[str, Any]]:
+        """Nicks with a live WebSocket connection who are also members of
+        `channel`, each as `{"nick": ..., "is_agent": ...}`."""
+        resp = self._client.get(
+            f"/v1/channels/{_path_segment(channel)}/presence", headers=self._headers()
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"GET /v1/channels/{channel}/presence -> {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+        data = resp.json()
+        return data.get("online", data) if isinstance(data, dict) else data
+
+    # ── Reactions ────────────────────────────────────────────────────────
+    # AitherRelay's reaction route is TOGGLE semantics, not add/remove: one
+    # POST either adds or removes the caller's own reaction, whichever the
+    # current state calls for. The result comes back inline on every message
+    # a channel/thread read already returns (`Message.reactions`), so this
+    # client has no separate "get reactions" call — `history()`/`get_thread()`
+    # already carry it.
+
+    def react(self, channel: str, message_id: str, emoji: str) -> None:
+        """Toggle `emoji` from the caller on a message: adds it if the
+        caller hasn't reacted with it yet, removes it if they have."""
+        body = {"emoji": emoji, "nick": self.nick or ""}
+        resp = self._client.post(
+            f"/v1/channels/{_path_segment(channel)}/messages/{_path_segment(message_id)}/react",
+            json=body, headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"POST .../messages/{message_id}/react -> {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+
+    # ── Search ───────────────────────────────────────────────────────────
+
+    def search(
+        self, query: str, *, channel: str = "", workspace: str = "", limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Full-text search over message content. Scope to one `channel` or
+        an entire `workspace`; omit both to search every channel the caller
+        can see. Empty `query` is rejected server-side (400), not silently
+        treated as "match everything"."""
+        if not query:
+            raise RelayError("search() requires a non-empty query")
+        resp = self._client.get(
+            "/v1/search",
+            params={"q": query, "channel": channel, "workspace": workspace, "limit": limit},
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise RelayError(f"GET /v1/search -> {resp.status_code}: {resp.text[:200]}")
+        return resp.json().get("results", [])
+
+    # ── Read state / delivery ───────────────────────────────────────────
+    # "Delivery guarantees" in the REST-client sense this package can offer:
+    # not an ack-per-message protocol (Relay has none), but the read-cursor
+    # AitherRelay already tracks server-side — so an agent can tell what it
+    # has and hasn't seen across a restart, same as a human client would.
+
+    def mark_read(self, channel: str) -> None:
+        """Advance this nick's read cursor for `channel` to now."""
+        resp = self._client.post(
+            f"/v1/channels/{_path_segment(channel)}/read",
+            params={"nick": self.nick or ""},
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"POST /v1/channels/{channel}/read -> {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+
+    def unread_counts(self) -> dict[str, Any]:
+        """Unread message counts per channel this nick belongs to, since its
+        last `mark_read` cursor."""
+        resp = self._client.get(
+            "/v1/unread", params={"nick": self.nick or ""}, headers=self._headers()
+        )
+        if resp.status_code != 200:
+            raise RelayError(f"GET /v1/unread -> {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
+
+    # ── Pins ─────────────────────────────────────────────────────────────
+    # Moderator-only server-side (403 otherwise) — this client does not
+    # duplicate that check; it surfaces whatever AitherRelay decides via
+    # RelayError, same as every other write here.
+
+    def pin(self, channel: str, message_id: str) -> None:
+        resp = self._client.post(
+            f"/v1/channels/{_path_segment(channel)}/pin/{_path_segment(message_id)}",
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"POST .../pin/{message_id} -> {resp.status_code}: {resp.text[:200]}"
+            )
+
+    def unpin(self, channel: str, message_id: str) -> None:
+        resp = self._client.delete(
+            f"/v1/channels/{_path_segment(channel)}/pin/{_path_segment(message_id)}",
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"DELETE .../pin/{message_id} -> {resp.status_code}: {resp.text[:200]}"
+            )
+
+    def pinned(self, channel: str) -> list[dict[str, Any]]:
+        resp = self._client.get(
+            f"/v1/channels/{_path_segment(channel)}/pins", headers=self._headers()
+        )
+        if resp.status_code != 200:
+            raise RelayError(
+                f"GET /v1/channels/{channel}/pins -> {resp.status_code}: {resp.text[:200]}"
+            )
+        data = resp.json()
+        return data.get("pinned", data) if isinstance(data, dict) else data

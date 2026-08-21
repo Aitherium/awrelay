@@ -26,15 +26,17 @@ Fields:
                 one it refines. None for a standalone message.
     sent_at     UTC ISO-8601 timestamp, set by `Envelope.new()`.
 
-NOT an A2A (Agent2Agent) implementation. The shapes are deliberately close
-enough that a bridge is a translation layer, not a rewrite — `kind` maps
-loosely onto A2A's message/task/artifact split — but this does not claim
-protocol compliance, and does not route through this repo's own A2A layer.
-That layer has a known, separate gap (an in-fleet caller's internal key
-bypasses per-skill grants — see AitherOS memory
-`a2a-internal-key-bypasses-per-skill-grants`), and bridging into it before
-that is fixed would extend the hole rather than fix it. A real A2A bridge
-is future work, tracked as such, not silently skipped.
+NOT an A2A (Agent2Agent) implementation — no protocol-compliance claim.
+`a2a_bridge.py` maps `kind` loosely onto A2A's message/task/artifact split
+(a translation layer, not a rewrite) and DOES route through this repo's own
+A2A layer (AitherA2A). That layer has a known, separate gap: an in-fleet
+caller's internal key bypasses its per-skill grant system entirely — see
+AitherOS memory `a2a-internal-key-bypasses-per-skill-grants`. The bridge is
+safe against that gap by construction rather than by waiting for it to be
+fixed: it never reads or sends an internal-fleet credential, so every call
+it makes goes through the exact same human-approval flow a genuine external
+peer's would — see `a2a_bridge.py`'s own module docstring for the full
+reasoning and the shape of that flow.
 """
 
 from __future__ import annotations

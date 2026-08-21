@@ -13,21 +13,35 @@ pip install awrelay
 
 Python 3.9+. `httpx` is the only hard dependency.
 
-## What it is not
+## What it is
 
-Not a new wire protocol, not a message queue, not an A2A implementation. It
-is a REST client (`GET/POST /v1/channels[...]`) plus one convention: a
-message can carry a small JSON envelope — `kind`, `sender`, `text`, an
+A REST client for an AitherRelay-shaped chat server (`client.py`): channels,
+threads, full-text search, read-cursors, pins, reactions, real-time presence.
+A message can carry a small JSON envelope — `kind`, `sender`, `text`, an
 optional `payload`, an optional `correlation_id` — fenced inside an ordinary
 chat message body. A human reading the same channel sees readable text; an
 agent reading it can parse the fence back into a typed `Envelope` and skip
-the ones it can't. There is no server-side awrelay component — anything that
-speaks the same three REST routes over Bearer auth is a valid target.
+the ones it can't. `mcp_server.py` exposes all of it as MCP tools;
+`cli.py` exposes it as subcommands.
 
-Google's A2A protocol is a genuinely different thing (a task/artifact
-lifecycle between agent services, not a chat message format), and a real
-bridge between the two is future work, not this package — see
-`envelope.py`'s docstring for the specific reason it isn't built yet.
+`a2a_bridge.py` additionally talks to **AitherA2A** — a genuinely different
+system (a task/artifact lifecycle between agent services, not a chat message
+format) — but deliberately not as a trusted in-fleet caller: it never reads
+or sends an internal-fleet credential, so it goes through the exact same
+human-approval flow any external peer would, and a denied call surfaces the
+approval request rather than failing silently. See `a2a_bridge.py`'s module
+docstring for why that scoping matters and what it does and doesn't cover
+(not full Google A2A protocol compliance — a `kind`-to-message/task mapping,
+stated as such).
+
+## What it is not
+
+Not a new wire protocol, not a message queue. Almost everything above rides
+AitherRelay's EXISTING REST surface — `GET/POST /v1/channels[...]` and
+friends — over Bearer auth; the one addition (`GET .../presence`, real-time
+liveness rather than static membership) is a small, additive read with the
+same access gate every other channel read already has. Nothing here requires
+running a dedicated awrelay server component.
 
 ## Quickstart
 
@@ -113,7 +127,7 @@ set by whoever wired up the client, is what gets to decide that.
   Knows **what the code is and what depends on what**.
 - **awrelay** — agent messaging. Knows **who found what, and who still needs
   to hear it**.
-- **[aither-adk](https://github.com/Aitherium/aither-adk)** — the agent
+- **[awdk](https://github.com/Aitherium/awdk)** — the agent
   runtime that consumes all three.
 
 None of the three requires the others. Used together, an agent can find a
@@ -125,31 +139,7 @@ solo grep-and-guess loop cannot ask at all.
 
 Apache 2.0.
 
-<!-- aitherium-ecosystem:start -->
-## Aitherium open-source ecosystem
-
-This repo is one piece of a connected set. All public, MIT/BSL-licensed:
-
-| repo | what it is | pages |
-|---|---|---|
-| [awrecover](https://github.com/Aitherium/awrecover) | Labelled snapshots with an all-or-nothing restore | [docs](https://aitherium.github.io/awrecover/) |
-| [awshare](https://github.com/Aitherium/awshare) | Publish an artifact and fetch it back verified | [docs](https://aitherium.github.io/awshare/) |
-| [awseal](https://github.com/Aitherium/awseal) | Sign an artifact so a stranger can verify it | [docs](https://aitherium.github.io/awseal/) |
-| [awnode](https://github.com/Aitherium/awnode) | Lightweight local gateway — your apps to backends you chose | [docs](https://aitherium.github.io/awnode/) |
-| [awnix](https://github.com/Aitherium/awnix) | A bootable, immutable Linux base for agent-run machines | [docs](https://aitherium.github.io/awnix/) |
-| [awdk](https://github.com/Aitherium/awdk) | Build AI agent fleets — 3 lines, any backend | [docs](https://aitherium.github.io/awdk/) |
-| [awskills](https://github.com/Aitherium/awskills) | Free agent skills, scripts & automations | [docs](https://aitherium.github.io/awskills/) |
-| [AitherZero](https://github.com/Aitherium/AitherZero) | PowerShell 7+ automation framework | [docs](https://aitherium.github.io/AitherZero/) |
-| [awgit](https://github.com/Aitherium/awgit) | Semantic version control on top of git | [docs](https://aitherium.github.io/awgit/) |
-| [awgraph](https://github.com/Aitherium/awgraph) | Code knowledge graph for AI agents | [docs](https://aitherium.github.io/awgraph/) |
-| [aitherkvcache](https://github.com/Aitherium/aitherkvcache) | Near-optimal KV cache quantization | [docs](https://aitherium.github.io/aitherkvcache/) |
-| [awrelay](https://github.com/Aitherium/awrelay) | Agent-to-agent messaging over any chat server | [docs](https://aitherium.github.io/awrelay/) |
-| [awm](https://github.com/Aitherium/awm) | A small world model (LeWM JEPA + MLP) to bootstrap your own | [docs](https://aitherium.github.io/awm/) |
-| [AitherConnect](https://github.com/Aitherium/AitherConnect) | Browser extension: federated AI search & desktop bridge | — |
-| [homebrew-tap](https://github.com/Aitherium/homebrew-tap) | `brew tap aitherium/tap` | — |
-
-Built by [Aitherium](https://aitherium.com).
-<!-- aitherium-ecosystem:end -->
+---
 
 <!-- aither-ecosystem:start GENERATED from the ecosystem registry. Edits here are overwritten; change the registry instead. -->
 

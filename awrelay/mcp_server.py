@@ -71,6 +71,19 @@ def _client_from_env():
     )
 
 
+def _a2a_bridge_from_env():
+    from awrelay.a2a_bridge import A2ABridge
+
+    url = os.environ.get("AWRELAY_A2A_URL")
+    if not url:
+        raise RuntimeError(
+            "AWRELAY_A2A_URL is not set. Separate from AWRELAY_URL — this is "
+            "AitherA2A's own origin, e.g. http://a2a-host:8766. Never an "
+            "internal-key credential; this bridge never carries one, by design."
+        )
+    return A2ABridge(url)
+
+
 def build_server():
     """Construct the MCP server. Raises ImportError if `mcp` is absent."""
     try:
@@ -169,6 +182,201 @@ def build_server():
             else:
                 out.append(item)
         return json.dumps(out)
+
+    @server.tool(
+        name="relay_reply_in_thread",
+        description="Reply to a specific message, creating its thread if needed.",
+    )
+    async def relay_reply_in_thread(channel: str, message_id: str, text: str) -> str:
+        client = _client_from_env()
+        try:
+            return json.dumps(client.reply_in_thread(channel, message_id, text))
+        except RelayError as exc:
+            return f"Thread reply failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
+        name="relay_get_thread",
+        description=(
+            "Read every reply under a message, plus thread metadata "
+            "(reply count, participants)."
+        ),
+    )
+    async def relay_get_thread(channel: str, message_id: str) -> str:
+        client = _client_from_env()
+        try:
+            return json.dumps(client.get_thread(channel, message_id))
+        except RelayError as exc:
+            return f"Thread fetch failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
+        name="relay_threads",
+        description=(
+            "List thread roots in a forum-mode channel (title, author, reply "
+            "count, pin/lock state). Empty for an ordinary chat channel."
+        ),
+    )
+    async def relay_threads(channel: str) -> str:
+        client = _client_from_env()
+        try:
+            return json.dumps(client.list_threads(channel))
+        except RelayError as exc:
+            return f"Thread list failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
+        name="relay_search",
+        description=(
+            "Full-text search over message content, optionally scoped to "
+            "one channel or workspace."
+        ),
+    )
+    async def relay_search(
+        query: str, channel: str = "", workspace: str = "", limit: int = 50,
+    ) -> str:
+        client = _client_from_env()
+        try:
+            return json.dumps(
+                client.search(query, channel=channel, workspace=workspace, limit=limit)
+            )
+        except RelayError as exc:
+            return f"Search failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
+        name="relay_unread",
+        description="Unread message counts per channel this agent's nick belongs to.",
+    )
+    async def relay_unread() -> str:
+        client = _client_from_env()
+        try:
+            return json.dumps(client.unread_counts())
+        except RelayError as exc:
+            return f"Unread fetch failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
+        name="relay_a2a_call",
+        description=(
+            "Invoke a skill on an AitherA2A-registered service. First call "
+            "for a new (service, skill) pair returns a pending-approval "
+            "notice naming access_request_id -- get a human to approve it "
+            "via AitherA2A's own admin surface, then retry passing the "
+            "returned grant_token as grant_token here. Never sends an "
+            "internal-fleet credential; this is a genuinely external-shaped "
+            "caller."
+        ),
+    )
+    async def relay_a2a_call(
+        service: str, skill: str, params: str | None = None, grant_token: str | None = None,
+    ) -> str:
+        from awrelay.a2a_bridge import A2AApprovalPendingError, A2AError
+
+        bridge = _a2a_bridge_from_env()
+        try:
+            parsed = json.loads(params) if params else None
+            result = bridge.call(service, skill, parsed, grant_token=grant_token)
+            return json.dumps(result)
+        except A2AApprovalPendingError as exc:
+            return json.dumps({
+                "status": "approval_pending",
+                "resource": exc.resource,
+                "access_request_id": exc.access_request_id,
+                "how_to_proceed": exc.how_to_proceed,
+            })
+        except A2AError as exc:
+            return f"A2A call failed: {exc}"
+        except (ValueError, json.JSONDecodeError) as exc:
+            return f"Bad arguments: {exc}"
+        finally:
+            bridge.close()
+
+    @server.tool(
+        name="relay_a2a_delegate",
+        description=(
+            "Delegate a task to another A2A-registered agent. Same "
+            "pending-approval / grant_token flow as relay_a2a_call."
+        ),
+    )
+    async def relay_a2a_delegate(
+        to_agent: str, message: str, from_agent: str = "awrelay-bridge",
+        session_id: str | None = None, grant_token: str | None = None,
+    ) -> str:
+        from awrelay.a2a_bridge import A2AApprovalPendingError, A2AError
+
+        bridge = _a2a_bridge_from_env()
+        try:
+            result = bridge.delegate(
+                to_agent, message, from_agent=from_agent,
+                session_id=session_id, grant_token=grant_token,
+            )
+            return json.dumps(result)
+        except A2AApprovalPendingError as exc:
+            return json.dumps({
+                "status": "approval_pending",
+                "resource": exc.resource,
+                "access_request_id": exc.access_request_id,
+                "how_to_proceed": exc.how_to_proceed,
+            })
+        except A2AError as exc:
+            return f"A2A delegate failed: {exc}"
+        finally:
+            bridge.close()
+
+    @server.tool(
+        name="relay_presence",
+        description=(
+            "Nicks with a live connection who are also members of a "
+            "channel (real-time, not membership status)."
+        ),
+    )
+    async def relay_presence(channel: str) -> str:
+        client = _client_from_env()
+        try:
+            return json.dumps(client.presence(channel))
+        except RelayError as exc:
+            return f"Presence fetch failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
+        name="relay_react",
+        description=(
+            "Toggle an emoji reaction on a message: adds it if the agent "
+            "hasn't reacted with it yet, removes it if they have."
+        ),
+    )
+    async def relay_react(channel: str, message_id: str, emoji: str) -> str:
+        client = _client_from_env()
+        try:
+            client.react(channel, message_id, emoji)
+            return json.dumps(
+                {"ok": True, "channel": channel, "message_id": message_id, "emoji": emoji}
+            )
+        except RelayError as exc:
+            return f"React failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
+        name="relay_mark_read",
+        description="Advance this agent's read cursor for a channel to now.",
+    )
+    async def relay_mark_read(channel: str) -> str:
+        client = _client_from_env()
+        try:
+            client.mark_read(channel)
+            return json.dumps({"ok": True, "channel": channel})
+        except RelayError as exc:
+            return f"Mark-read failed: {exc}"
+        finally:
+            client.close()
 
     return server
 

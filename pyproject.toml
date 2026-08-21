@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awrelay"
-version = "0.1.0"
+version = "0.2.0"
 description = "A portable client for AitherRelay-shaped agent messaging — findings, alerts and coordination between agents, over real chat channels a human can also read."
 readme = "README.md"
 requires-python = ">=3.10"
