@@ -330,37 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _force_utf8_stdio() -> None:
-    """Make the console tolerate the emoji this relay actually carries.
-
-    Windows consoles default to cp1252, and `print()` of any character outside
-    it raises UnicodeEncodeError -- which aborts the command with a traceback
-    AFTER the network round-trip has already succeeded. Measured 2026-08-19:
-    `awrelay history '#playground'` fetched the channel fine and then died on
-    a moon emoji, so a working relay read like a broken one.
-
-    That is not an exotic input here: the relay's own announcements are full of
-    them (announce lines lead with a play triangle, a trophy, a moon, a brain),
-    so on Windows `history` was unusable on any channel a service posts to.
-
-    errors="replace" rather than a narrower encoding: a message that cannot be
-    rendered should show a replacement glyph, never cost the reader the other
-    twenty messages in the buffer.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:      # not a TextIOWrapper (piped/captured)
-            continue
-        try:
-            reconfigure(encoding="utf-8", errors="replace")
-        except (ValueError, OSError):
-            # A stream that refuses reconfiguration is not worth failing the
-            # command over; the print below may still succeed.
-            pass
-
-
 def main(argv: list[str] | None = None) -> int:
-    _force_utf8_stdio()
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.command == "mcp":
