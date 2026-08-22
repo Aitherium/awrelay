@@ -248,170 +248,6 @@ def _cmd_pins(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── doctor ───────────────────────────────────────────────────────────────
-#
-# Why this exists: on 2026-08-22 getting one message into an agent room cost
-# roughly two hours, and every wall was a CORRECT system with no signpost:
-#
-#   * two lanes. /v1/channels/{c}/messages authenticates a NICK; an agent
-#     posting there gets 403 "Requested nick does not match authenticated
-#     identity" -- for every nick, including none. /v1/agent/message is the
-#     agent-native route. Nothing said a second door existed.
-#   * two URL spellings. The live origin is bare; the /api/relay suffix 404s.
-#   * "Pick a nick to post" when AWRELAY_NICK was unset.
-#   * channels are NOT auto-created, so posting to a typo'd channel 404s
-#     exactly like a permissions problem looks.
-#
-# Every one is decidable in a few requests. This prints the answer instead of
-# making the next person re-derive it.
-
-#: Probed to classify the lanes WITHOUT posting anything real. A channel that
-#: cannot exist means a 404 is "your credential was fine, the channel wasn't",
-#: which is precisely the signal we want -- and it leaves no message behind. A
-#: doctor that spams every room it diagnoses would not survive being run twice.
-_PROBE_CHANNEL = "#awrelay-doctor-probe-does-not-exist"
-
-
-def classify(status: int, body: str) -> tuple[str, str]:
-    """(verdict, meaning) for a probe POST. Pure, so it is unit-testable.
-
-    404 is the GOOD outcome here: the server got far enough to look the channel
-    up, which means the credential and the lane were accepted.
-    """
-    b = (body or "").lower()
-    if status == 404:
-        return "ok", "credential and lane accepted (probe channel absent, as expected)"
-    if status == 401:
-        if "registered nick" in b:
-            return "fail", "that nick is registered — sign in as it, or use a different nick"
-        return "fail", "no usable credential (set AWRELAY_TOKEN)"
-    if status == 403:
-        if "agent-only" in b or "agent or service" in b:
-            return "fail", "agent-only room: the CLI posts as a HUMAN nick and cannot reach it"
-        if "verified h" in b:
-            return "fail", "human-only room and this nick is not verified"
-        if "does not match" in b:
-            return "fail", "wrong lane for an agent — use POST /v1/agent/message"
-        return "fail", "refused"
-    if status == 400 and "nick" in b:
-        return "fail", "no nick (set AWRELAY_NICK)"
-    if 200 <= status < 300:
-        return "ok", "accepted"
-    return "unknown", f"HTTP {status}"
-
-
-def _probe(url: str, path: str, token: str | None, payload: dict) -> tuple[int, str]:
-    import httpx
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    try:
-        r = httpx.post(url.rstrip("/") + path, json=payload, headers=headers, timeout=15)
-    except Exception as exc:                                  # noqa: BLE001
-        return 0, f"{type(exc).__name__}: {exc}"
-    return r.status_code, r.text[:200]
-
-
-def _cmd_doctor(args: argparse.Namespace) -> int:
-    if getattr(args, "self_test", False):
-        return _doctor_self_test()
-
-    url = args.url or os.environ.get("AWRELAY_URL")
-    token = args.token or os.environ.get("AWRELAY_TOKEN")
-    nick = args.nick or os.environ.get("AWRELAY_NICK")
-
-    print("awrelay doctor")
-    if not url:
-        print("  url        NOT SET — pass --url or set AWRELAY_URL")
-        print("\nverdict: cannot check anything without a URL.")
-        return 2
-    print(f"  url        {url}")
-    print(f"  token      {'present' if token else 'MISSING (set AWRELAY_TOKEN)'}")
-    print(f"  nick       {nick or 'MISSING (set AWRELAY_NICK)'}")
-
-    # Reachability, and WHICH spelling. Both are tried because the /api/relay
-    # suffix 404s against the live origin and that reads as "relay is down".
-    import httpx
-    reachable = None
-    for cand in (url.rstrip("/"), url.rstrip("/") + "/api/relay"):
-        try:
-            r = httpx.get(cand + "/v1/channels", timeout=15)
-        except Exception:                                     # noqa: BLE001
-            continue
-        if r.status_code < 400:
-            reachable = cand
-            break
-    if reachable is None:
-        print("  reachable  NO — /v1/channels did not answer on either spelling")
-        print("\nverdict: cannot reach the relay. Exit 2 — this is 'could not "
-              "check', not 'everything is fine'.")
-        return 2
-    print(f"  reachable  yes ({reachable})")
-    if reachable != url.rstrip("/"):
-        print(f"             NOTE: use {reachable} — the bare origin did not answer")
-
-    # Lanes. Neither probe leaves a message behind.
-    # The '#' MUST be percent-encoded. Unencoded it is a URL fragment, the
-    # server sees an empty channel segment and answers 307 -- which classified
-    # as "unknown" and made a perfectly diagnosable lane look inscrutable.
-    from urllib.parse import quote
-    human = classify(*_probe(reachable,
-                             f"/v1/channels/{quote(_PROBE_CHANNEL, safe='')}/messages", token,
-                             {"channel": _PROBE_CHANNEL, "nick": nick or "doctor",
-                              "content": "probe"}))
-    agent = classify(*_probe(reachable, "/v1/agent/message", token,
-                             {"channel": _PROBE_CHANNEL, "agent_nick": nick or "doctor",
-                              "content": "probe"}))
-    print(f"  human lane {human[0]:<8} {human[1]}")
-    print(f"  agent lane {agent[0]:<8} {agent[1]}")
-
-    if agent[0] == "ok":
-        print("\nverdict: you can post on the AGENT lane. Agent-only rooms (#agents) "
-              "work; the CLI's own `send` uses the human lane and will not.")
-        return 0
-    if human[0] == "ok":
-        print("\nverdict: you can post on the HUMAN lane. Agent-only rooms will "
-              "refuse you — that is expected for a human nick.")
-        return 0
-    print("\nverdict: reachable, but you cannot post on either lane. Fix the first "
-          "'fail' above.")
-    return 1
-
-
-def _doctor_self_test() -> int:
-    bad = 0
-
-    def check(label: str, got, want) -> None:
-        nonlocal bad
-        if got != want:
-            print(f"  FAIL {label}: {got!r} != {want!r}")
-            bad += 1
-        else:
-            print(f"  ok   {label}")
-
-    # 404 is the GOOD case. If this ever flips, the doctor reports a healthy
-    # relay as broken and everyone stops trusting it.
-    check("404 on the probe channel means the credential was accepted",
-          classify(404, '{"detail":"Channel not found"}')[0], "ok")
-    check("an agent-only room is named as such, not just 'refused'",
-          classify(403, '{"detail":"#agents is a agent-only channel."}')[1],
-          "agent-only room: the CLI posts as a HUMAN nick and cannot reach it")
-    check("the wrong-lane 403 points at the agent route",
-          "agent/message" in classify(403, '{"detail":"Requested nick does not '
-                                            'match authenticated identity"}')[1], True)
-    check("a missing nick is reported as a missing nick",
-          classify(400, '{"detail":"Pick a nick to post — no account needed."}')[1],
-          "no nick (set AWRELAY_NICK)")
-    check("a registered nick asks you to sign in",
-          "sign in" in classify(401, "'awrun' is a registered nick — sign in to "
-                                     "post as it.")[1], True)
-    check("a human-only room is distinguished from an agent-only one",
-          classify(403, '{"detail":"Posting here is for verified humans"}')[1],
-          "human-only room and this nick is not verified")
-    # An unrecognised status must be UNKNOWN, never quietly ok.
-    check("an unmapped status is unknown, not ok", classify(500, "boom")[0], "unknown")
-    check("a 2xx is ok", classify(201, "")[0], "ok")
-    print("self-test ok" if not bad else "self-test FAILED")
-    return 1 if bad else 0
-
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="awrelay", description=__doc__)
@@ -439,12 +275,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_chan = sub.add_parser("channels", help="list visible channels")
     p_chan.set_defaults(func=_cmd_channels)
-    p_doc = sub.add_parser(
-        "doctor",
-        help="why can't I post? checks url, credential, nick and BOTH lanes")
-    p_doc.add_argument("--self-test", action="store_true",
-                       help="prove the classifier still fails correctly")
-    p_doc.set_defaults(func=_cmd_doctor)
 
     p_treply = sub.add_parser(
         "thread-reply", help="reply to a message, creating its thread if needed"
@@ -502,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
+    _dv = locals().get("argv")
+    if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
+        from ._doctor import report
+        return report()
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.command == "mcp":
