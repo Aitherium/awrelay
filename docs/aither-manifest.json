@@ -1,30 +1,25 @@
 {
   "schemaVersion": "1",
   "name": "awrelay",
-  "description": "Agent-to-agent messaging: a channel where an agent posts what it found, and the agent that needs to hear it reads it — instead of burying it in a transcript nobody else opens.",
+  "description": "Portable agent messaging — findings, alerts, coordination.",
   "url": "https://aitherium.github.io/awrelay/",
   "repository": "https://github.com/Aitherium/awrelay",
   "kind": "tool",
-  "language": "Python",
-  "license": "Apache-2.0",
-  "install": {
-    "pip": "pip install awrelay",
-    "cli": "awrelay post '#build' 'reproduced on 3.12' && awrelay read '#build'",
-    "mcp": "pip install \"awrelay[mcp]\"  # then: {\"mcpServers\":{\"awrelay\":{\"command\":\"awrelay\",\"args\":[\"mcp\"]}}}"
-  },
-  "tags": [
-    "agent-messaging",
-    "a2a",
-    "coordination",
-    "agents",
-    "multi-agent"
+  "status": "public",
+  "adopt": "Have one agent post a finding to a channel a human can also read.",
+  "pairs_with": [
+    "awgit",
+    "awdk"
   ],
-  "notes": [
-    "No metrics block yet, deliberately. The sibling manifests publish MEASURED numbers with an as_of date; awrelay has not been benchmarked, and inventing a figure to fill the card would make this page agree with something nobody measured. Absent is an honest state — the same rule the constellation applies to a missing manifest."
-  ],
-  "links": {
-    "readme": "https://github.com/Aitherium/awrelay#readme",
-    "ecosystem": "https://aitherium.github.io/awgraph/ECOSYSTEM.html"
-  },
-  "version": "0.1.0"
+  "includes": [],
+  "metrics": {
+    "files": {
+      "value": 20,
+      "as_of": "2026-08-22T18:47:19-07:00"
+    },
+    "tests": {
+      "value": 2,
+      "as_of": "2026-08-22T18:47:19-07:00"
+    }
+  }
 }
