@@ -15,6 +15,6 @@ from __future__ import annotations
 from awrelay.client import RelayClient, RelayError
 from awrelay.envelope import Envelope, Kind
 
-__version__ = "0.2.0"
+__version__ = "0.3.1"
 
 __all__ = ["RelayClient", "RelayError", "Envelope", "Kind"]
