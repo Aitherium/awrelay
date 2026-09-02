@@ -9,17 +9,18 @@
   "adopt": "Have one agent post a finding to a channel a human can also read.",
   "pairs_with": [
     "awgit",
-    "awdk"
+    "awdk",
+    "awdelphi"
   ],
   "includes": [],
   "metrics": {
     "files": {
-      "value": 23,
-      "as_of": "2026-08-26T08:21:46-07:00"
+      "value": 25,
+      "as_of": "2026-09-02T16:28:20-07:00"
     },
     "tests": {
-      "value": 2,
-      "as_of": "2026-08-26T08:21:46-07:00"
+      "value": 3,
+      "as_of": "2026-09-02T16:28:20-07:00"
     }
   }
 }
