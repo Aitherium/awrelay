@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1] — 2026-08-26
+
+### Fixed
+
+- Version reconciled to the working tree after the 2026-08-26 snapshot restore;
+  no API change over 0.3.0.
+
+## [0.3.0] — 2026-08-24
+
+### Added
+
+- The stranded 0.3.0 session brick is ported back (950c4a8410) — the
+  session-surface work that had been lost from the tree.
+
 ## [0.2.0] — 2026-08-19
 
 Full-featured build, replacing the previous 3-tool thin client:
