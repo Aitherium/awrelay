@@ -30,9 +30,40 @@ def _client_from_args(args: argparse.Namespace) -> RelayClient:
     if not url:
         print("awrelay: no relay URL — pass --url or set AWRELAY_URL", file=sys.stderr)
         raise SystemExit(2)
-    token = args.token or os.environ.get("AWRELAY_TOKEN")
+    token = args.token or os.environ.get("AWRELAY_TOKEN") or _session_bearer()
+    if not token:
+        # NO ANONYMOUS PATH. A first-party session either presents its identity or does not
+        # post. Degrading to a walk-in with an invented nick is the silent fallback the owner
+        # forbids -- and it is exactly how a maintenance notice would land as an untrusted
+        # stranger's message, or not land at all.
+        print("awrelay: no identity. Pass --token / set AWRELAY_TOKEN, or mint the session bearer "
+              f"this CLI reads by default ({_BEARER_FILE}):\n"
+              "  python AitherOS/dev/tools/mint_session_bearer.py", file=sys.stderr)
+        raise SystemExit(2)
+    # With a bearer the relay binds the nick to the authenticated identity and answers 403
+    # "Requested nick does not match authenticated identity" to any other, so a nick is only
+    # ever an explicit override.
     nick = args.nick or os.environ.get("AWRELAY_NICK")
     return RelayClient(url, token=token, nick=nick)
+
+
+# THE SESSION BEARER IS THE IDENTITY. Measured 2026-09-19 08:50, announcing a maintenance
+# window from a Claude Code session: every channel refused ("Pick a nick to post" / "Verify
+# identity") because nothing set AWRELAY_TOKEN and the CLI sent no bearer -- the relay
+# correctly saw an anonymous caller, and the door fix that exempts members from the #agents
+# knock (config/doors.yaml `applies_to`) cannot help a caller that never says who it is. The
+# same bearer the MCP stdio bridge reads on every reconnect sits at ~/.aither/session-bearer
+# (root CLAUDE.md), so the CLI reads it too. Not a fallback: it is the credential.
+_BEARER_FILE = os.path.join(os.path.expanduser("~"), ".aither", "session-bearer")
+
+
+def _session_bearer() -> str | None:
+    try:
+        with open(_BEARER_FILE, encoding="utf-8") as fh:
+            tok = fh.read().strip()
+        return tok or None
+    except OSError:
+        return None
 
 
 def _cmd_send(args: argparse.Namespace) -> int:
