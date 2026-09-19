@@ -61,6 +61,9 @@ class RelayClient:
         *,
         timeout: float = 15.0,
         verify: bool | str = True,
+        doors_url: Optional[str] = None,
+        humanity_source: Optional[Any] = None,
+        humanity_path: Optional[Any] = None,
     ) -> None:
         """
         base_url  the relay server's origin, e.g. "https://irc.aitherium.com"
@@ -75,10 +78,28 @@ class RelayClient:
         verify    passed straight to httpx — a self-hosted relay with a
                   private CA should pass its CA bundle path here, never
                   `False` (security-review-patterns.md #4).
+        doors_url the origin serving the knock protocol (`/doors/knock`,
+                  `/doors/present`). Defaults to the local MCP gateway,
+                  which is the only host-reachable door: Genesis, which
+                  issues the passes, publishes no host port.
+        humanity_source / humanity_path
+                  where this client finds the caller's OWN humanity
+                  attestation to present. Injectable for tests; the default
+                  file is written by `dev/tools/humanity_check.py`.
         """
+        from pathlib import Path
+
         self.base_url = base_url.rstrip("/")
         self.nick = nick
         self._token = token
+        self._verify = verify
+        self._doors_url = (doors_url or "http://127.0.0.1:8182").rstrip("/")
+        self._humanity_source = humanity_source
+        self._humanity_path = Path(humanity_path) if humanity_path else (
+            Path.home() / ".aither" / "humanity-attestation")
+        #: channel -> (attestation, expires_at). A door pass is short-lived
+        #: (minutes) by design, so it is cached per process, never on disk.
+        self._door_cache: dict[str, tuple[str, float]] = {}
         self._client = httpx.Client(
             base_url=self.base_url, timeout=timeout, verify=verify
         )
@@ -88,6 +109,97 @@ class RelayClient:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
+
+    # ── the knock protocol ──────────────────────────────────────────────
+    # A channel may be behind a DOOR: the relay refuses the write with 403
+    # and a remedy naming /doors/knock and /doors/present. Until 2026-09-18
+    # no client implemented it, so the remedy was unfollowable and every
+    # gated channel simply refused everyone.
+    #
+    # The evidence a door asks for is a HUMANITY attestation, which the
+    # caller's own Identity account holds; this client never mints one and
+    # never forges one. It presents what the operator already has, caches
+    # the resulting pass until it expires, and re-presents once if the relay
+    # says the pass is stale. When there is nothing to present, the error
+    # names the ONE thing the human must do, rather than the endpoint they
+    # cannot use.
+
+    def _door_attestation(self, channel: str) -> Optional[str]:
+        """A door pass for `channel`, from cache or freshly presented.
+
+        None when no door applies, when there is no evidence to present, or
+        when the doors plane cannot be reached — the caller then sends
+        without the header and lets the RELAY be the authority on whether
+        that is allowed. A client must not decide it is exempt.
+        """
+        import time
+
+        cached = self._door_cache.get(channel)
+        if cached and cached[1] > time.time() + 5:
+            return cached[0]
+        evidence = self._humanity_attestation()
+        if not evidence:
+            return None
+        door_id = f"channel:{channel}"
+        try:
+            resp = httpx.post(
+                f"{self._doors_url}/doors/present",
+                json={"door": door_id, "attestation": evidence},
+                headers=self._headers(),
+                timeout=20.0,
+                verify=self._verify,
+            )
+        except Exception:
+            return None
+        if resp.status_code != 200:
+            detail = ""
+            try:
+                detail = str(resp.json().get("detail", ""))[:160]
+            except Exception:
+                detail = resp.text[:160]
+            raise RelayError(
+                f"{channel} is behind the {door_id} door and admission was refused "
+                f"(HTTP {resp.status_code}: {detail or 'no reason given'}). "
+                f"If this says no human check was presented, take it once at "
+                f"Identity /auth/me/verify-humanity -- it is valid for 30 days."
+            )
+        data = resp.json()
+        token = data.get("attestation")
+        if not token:
+            return None
+        expires = float(data.get("expires_at") or (time.time() + float(data.get("ttl_s", 300))))
+        self._door_cache[channel] = (token, expires)
+        return token
+
+    def _humanity_attestation(self) -> Optional[str]:
+        """The caller's OWN humanity attestation. Injectable for tests; by
+        default the file the owner's tooling writes
+        (`~/.aither/humanity-attestation`, written by
+        `AitherOS/dev/tools/humanity_check.py`)."""
+        if self._humanity_source is not None:
+            return self._humanity_source()
+        try:
+            return self._humanity_path.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+
+    def _write(self, method: str, path: str, channel: str, **kw: Any) -> "httpx.Response":
+        """Every WRITE goes through here so the door is handled in exactly one
+        place: send, send_text and thread replies cannot drift apart."""
+        headers = dict(kw.pop("headers", None) or self._headers())
+        pass_token = self._door_attestation(channel)
+        if pass_token:
+            headers["X-Door-Attestation"] = pass_token
+        resp = self._client.request(method, path, headers=headers, **kw)
+        if resp.status_code == 403 and "door" in resp.text.lower():
+            # Either we sent no pass, or the one we sent aged out. Drop the
+            # cache and present once more -- never a loop.
+            self._door_cache.pop(channel, None)
+            retry_token = self._door_attestation(channel)
+            if retry_token and retry_token != pass_token:
+                headers["X-Door-Attestation"] = retry_token
+                resp = self._client.request(method, path, headers=headers, **kw)
+        return resp
 
     def close(self) -> None:
         self._client.close()
@@ -128,9 +240,9 @@ class RelayClient:
             "content": envelope.to_relay_content(),
             "agent": agent,
         }
-        resp = self._client.post(
-            f"/v1/channels/{_path_segment(channel)}/messages",
-            json=body, headers=self._headers()
+        resp = self._write(
+            "POST", f"/v1/channels/{_path_segment(channel)}/messages",
+            channel, json=body,
         )
         if resp.status_code not in (200, 201):
             raise RelayError(
@@ -186,9 +298,10 @@ class RelayClient:
     ) -> dict[str, Any]:
         """Reply to `message_id`, creating its thread if it doesn't exist yet."""
         body = {"content": text, "nick": self.nick or "", "agent": agent}
-        resp = self._client.post(
+        resp = self._write(
+            "POST",
             f"/v1/channels/{_path_segment(channel)}/messages/{_path_segment(message_id)}/thread",
-            json=body, headers=self._headers(),
+            channel, json=body,
         )
         if resp.status_code not in (200, 201):
             raise RelayError(
@@ -234,9 +347,9 @@ class RelayClient:
         message plus its ThreadInfo. Ordinary chat channels don't need this;
         `send_text` + `reply_in_thread` covers a chat-shaped thread."""
         body = {"title": title, "content": text, "nick": self.nick or "", "agent": agent}
-        resp = self._client.post(
-            f"/v1/channels/{_path_segment(channel)}/threads",
-            json=body, headers=self._headers(),
+        resp = self._write(
+            "POST", f"/v1/channels/{_path_segment(channel)}/threads",
+            channel, json=body,
         )
         if resp.status_code not in (200, 201):
             raise RelayError(
