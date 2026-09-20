@@ -56,7 +56,10 @@ SEP = "+"
 _SUFFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{1,39}$")
 
 #: Environment variables that carry a session identifier, most specific first.
-_SESSION_ENV = ("AWRELAY_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "AGENT_SESSION_ID")
+_SESSION_ENV = ("AWRELAY_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "AGENT_SESSION_ID",
+                # A harness-spawned agent that is not Claude Code has no id of its own
+                # in the environment except the one its harness gave it.
+                "AITHER_HARNESS_SESSION")
 
 
 def is_session_alias(req_nick: str, identity_nick: str) -> bool:

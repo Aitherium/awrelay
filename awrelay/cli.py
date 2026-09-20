@@ -21,6 +21,8 @@ import json
 import os
 import sys
 
+import httpx
+
 from awrelay.client import RelayClient, RelayError
 from awrelay.envelope import Envelope
 
@@ -44,7 +46,47 @@ def _client_from_args(args: argparse.Namespace) -> RelayClient:
     # "Requested nick does not match authenticated identity" to any other, so a nick is only
     # ever an explicit override.
     nick = args.nick or os.environ.get("AWRELAY_NICK")
-    return RelayClient(url, token=token, nick=nick)
+    client = RelayClient(url, token=token, nick=nick)
+    # EVERY SESSION SIGNS ITS OWN NAME. Measured 2026-09-19: 67 of 129 #agents messages
+    # were from "david" with an EMPTY envelope sender -- twenty concurrent sessions, one
+    # name, so nobody could tell who said what, address a reply, or skip their own posts.
+    # `session.py` had defined `<nick>+<session>` for four weeks with zero callers. With no
+    # explicit nick, ask the relay who this bearer is (cached a day) and sign as its alias.
+    client.identity_nick = ""
+    client.alias_derived = False
+    if not nick and getattr(args, "command", "") not in _NO_IDENTITY_COMMANDS:
+        from awrelay.inbox import resolve_identity
+        identity, mine = resolve_identity(client, token,
+                                          session_id=getattr(args, "session_id", "") or "")
+        client.identity_nick = identity
+        if mine:
+            client.nick = mine
+            client.alias_derived = mine != identity
+    return client
+
+
+#: Commands that never write and never need to know who is asking.
+_NO_IDENTITY_COMMANDS = frozenset({"channels", "history", "search", "thread", "threads", "pins",
+                                   "presence", "install-hooks"})
+
+
+def _retry_without_alias(client: RelayClient, exc: RelayError) -> bool:
+    """A relay that predates session aliases answers 403 to `<nick>+<session>`. That is a
+    SERVER gap, not a reason to lose the message: fall back to the plain identity nick
+    ONCE and say so on stderr -- loudly, because the fallback is exactly the
+    indistinguishable state the alias exists to end (the server half of the convention was
+    lost from develop for four weeks and nothing reported it)."""
+    if not getattr(client, "alias_derived", False):
+        return False
+    if "does not match authenticated identity" not in str(exc):
+        return False
+    print(f"awrelay: this relay refused the session alias {client.nick!r}; posting as "
+          f"{client.identity_nick!r}. The server is missing session-alias support "
+          "(AitherRelay._nick_permitted) -- peers cannot tell this session apart.",
+          file=sys.stderr)
+    client.nick = client.identity_nick
+    client.alias_derived = False
+    return True
 
 
 # THE SESSION BEARER IS THE IDENTITY. Measured 2026-09-19 08:50, announcing a maintenance
@@ -69,17 +111,111 @@ def _session_bearer() -> str | None:
 def _cmd_send(args: argparse.Namespace) -> int:
     client = _client_from_args(args)
     payload = json.loads(args.payload) if args.payload else {}
+    if args.to:
+        payload = dict(payload, to=[t.strip() for t in args.to if t.strip()])
     try:
-        env = Envelope.new(args.kind, client.nick or "", args.text, payload=payload)
-        result = client.send(args.channel, env)
+        try:
+            env = Envelope.new(args.kind, client.nick or "", args.text, payload=payload)
+            result = client.send(args.channel, env)
+        except RelayError as exc:
+            if not _retry_without_alias(client, exc):
+                raise
+            env = Envelope.new(args.kind, client.nick or "", args.text, payload=payload)
+            result = client.send(args.channel, env)
     except RelayError as exc:
         print(f"awrelay: {exc}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(result))
     else:
-        print(f"sent to {args.channel}: {args.text}")
+        who = f" as {client.nick}" if client.nick else ""
+        print(f"sent to {args.channel}{who}: {args.text}")
     return 0
+
+
+def _hook_log(msg: str) -> None:
+    try:
+        from datetime import datetime, timezone
+        path = os.path.join(os.path.expanduser("~"), ".aither", "logs", "relay-inbox.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now(timezone.utc).isoformat()} {msg}\n")
+    except OSError:
+        return  # the log is where a hook failure goes; its own failure has nowhere to go
+
+
+def _cmd_inbox(args: argparse.Namespace) -> int:
+    """What peers said that THIS session has not seen. `--claude-hook` makes the same verb
+    a Claude Code hook (SessionStart / UserPromptSubmit): hook JSON on stdin, additional
+    context on stdout, and NEVER a non-zero exit -- a relay outage must not block a prompt."""
+    from awrelay import inbox
+
+    hook_event = ""
+    if args.claude_hook:
+        try:
+            data = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            data = {}
+        # An explicit AWRELAY_SESSION_ID names the session for sends too, so it must win
+        # here or a session would read as one nick and write as another.
+        args.session_id = (os.environ.get("AWRELAY_SESSION_ID", "").strip()
+                           or str(data.get("session_id") or ""))
+        hook_event = str(data.get("hook_event_name") or "UserPromptSubmit")
+    try:
+        client = _client_from_args(args)
+        if args.claude_hook:
+            client._client.timeout = 6.0  # noqa: SLF001 - a prompt waits on this
+        me = client.nick or ""
+        if not me:
+            raise RelayError("the relay did not say who this bearer is")
+        cursor = "" if args.all else inbox.read_cursor(me, args.channel)
+        rows = list(client.history(args.channel, limit=args.limit))
+        delivered, newest = inbox.select(rows, me=me, identity=client.identity_nick,
+                                         cursor=cursor)
+        if not args.peek and not inbox.write_cursor(me, args.channel, newest):
+            note = f"could not save the read cursor for {me}: these messages will repeat"
+            if args.claude_hook:
+                _hook_log(note)
+            else:
+                print(f"awrelay: {note}", file=sys.stderr)
+    except (RelayError, SystemExit, OSError, ValueError) as exc:
+        if args.claude_hook:
+            _hook_log(f"{hook_event} inbox {args.channel}: {type(exc).__name__}: {exc}")
+            return 0
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - httpx transport errors; same contract
+        if args.claude_hook:
+            _hook_log(f"{hook_event} inbox {args.channel}: {type(exc).__name__}: {exc}")
+            return 0
+        print(f"awrelay: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    text = inbox.frame(delivered, me=me, channel=args.channel)
+    if args.claude_hook:
+        if hook_event == "SessionStart":
+            # A session is told its relay name even when the inbox is empty: a session that
+            # does not know it HAS a name never signs with it or looks for replies to it.
+            intro = (f"Relay identity: you are `{me}` on {args.channel}. Leave findings and "
+                     f"blockers for other sessions with `awrelay send '{args.channel}' "
+                     "\"<text>\" --kind finding [--to <nick>]`; replies addressed to you arrive "
+                     "here automatically at your next prompt.")
+            text = intro + ("\n\n" + text if text else "")
+        _hook_log(f"{hook_event} inbox {args.channel} as {me}: delivered {len(delivered)}")
+        if text:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": hook_event,
+                                                     "additionalContext": text}}))
+        return 0
+    if args.json:
+        print(json.dumps({"me": me, "channel": args.channel, "messages": delivered}))
+    else:
+        print(text or f"(nothing new for {me} in {args.channel})")
+    return 0
+
+
+def _cmd_install_hooks(args: argparse.Namespace) -> int:
+    from awrelay.install import install
+    return install(user=not args.project, dry_run=args.dry_run, uninstall=args.uninstall)
 
 
 def _cmd_history(args: argparse.Namespace) -> int:
@@ -295,7 +431,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("--kind", default="message",
                          choices=["message", "finding", "alert", "request", "steer", "ack"])
     p_send.add_argument("--payload", help="JSON object for the structured payload")
+    p_send.add_argument("--to", action="append", default=[],
+                         help="address one session: its relay nick, or its session-id prefix "
+                              "(repeatable). It arrives in THAT session's inbox marked TO YOU")
+    p_send.add_argument("--session-id", default="",
+                         help="sign as this session (default: CLAUDE_CODE_SESSION_ID / "
+                              "AWRELAY_SESSION_ID / AGENT_SESSION_ID)")
     p_send.set_defaults(func=_cmd_send)
+
+    p_inbox = sub.add_parser(
+        "inbox", help="what other sessions said that this one has not seen")
+    p_inbox.add_argument("--channel", default=os.environ.get("AWRELAY_INBOX_CHANNEL", "#agents"))
+    p_inbox.add_argument("--limit", type=int, default=80, help="rows to scan (default 80)")
+    p_inbox.add_argument("--peek", action="store_true", help="do not advance the read cursor")
+    p_inbox.add_argument("--all", action="store_true", help="ignore the cursor (last hour)")
+    p_inbox.add_argument("--session-id", default="")
+    p_inbox.add_argument("--claude-hook", action="store_true",
+                          help="run as a Claude Code hook: JSON on stdin, context on stdout, "
+                               "always exit 0")
+    p_inbox.set_defaults(func=_cmd_inbox)
+
+    p_hooks = sub.add_parser(
+        "install-hooks",
+        help="register the inbox as a Claude Code SessionStart/UserPromptSubmit hook")
+    p_hooks.add_argument("--project", action="store_true",
+                          help="write ./.claude/settings.json instead of ~/.claude/settings.json")
+    p_hooks.add_argument("--dry-run", action="store_true")
+    p_hooks.add_argument("--uninstall", action="store_true")
+    p_hooks.set_defaults(func=_cmd_install_hooks)
 
     p_hist = sub.add_parser("history", help="show recent messages in a channel")
     p_hist.add_argument("channel")
@@ -382,7 +545,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mcp":
         from awrelay.mcp_server import main as mcp_main
         return mcp_main()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except httpx.HTTPError as exc:
+        # Transport failures are the relay saying nothing at all. They get the same one-line
+        # verdict and exit 1 as a refusal -- a 60-line traceback reads as "awrelay is broken"
+        # when the truth is "the relay did not answer".
+        print(f"awrelay: the relay did not answer ({type(exc).__name__}: {exc})",
+              file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

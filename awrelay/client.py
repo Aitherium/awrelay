@@ -52,6 +52,10 @@ class RelayError(Exception):
     swallowed into an empty result — see module docstring."""
 
 
+#: Seconds a write may take. See `_write`.
+WRITE_TIMEOUT_S = 45.0
+
+
 class RelayClient:
     def __init__(
         self,
@@ -109,6 +113,26 @@ class RelayClient:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
+
+    def whoami(self, *, timeout: float = 25.0) -> dict[str, Any]:
+        """Who the relay says this bearer is: `{"nick": ..., "scope": ...}`.
+
+        The relay has no /me route (four spellings 404, measured 2026-08-31); the
+        relay-token mint is the one call that answers with the authenticated nick, so
+        it is the identity probe. 25 s, not the client default: the FIRST call after
+        the relay or Identity restarts measured 9.0 s (2026-09-19) against 0.17 s warm,
+        and a 10 s ceiling is what turned a cold start into "relay unreachable".
+        The minted token itself is dropped -- this method answers a question, it does
+        not hand out credentials."""
+        resp = self._client.post(
+            "/v1/auth/relay-token", json={}, headers=self._headers(), timeout=timeout
+        )
+        if resp.status_code != 200:
+            raise RelayError(f"POST /v1/auth/relay-token -> {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise RelayError("POST /v1/auth/relay-token answered a non-object")
+        return {k: v for k, v in data.items() if k not in ("relay_token", "token")}
 
     # ── the knock protocol ──────────────────────────────────────────────
     # A channel may be behind a DOOR: the relay refuses the write with 403
@@ -187,6 +211,12 @@ class RelayClient:
         """Every WRITE goes through here so the door is handled in exactly one
         place: send, send_text and thread replies cannot drift apart."""
         headers = dict(kw.pop("headers", None) or self._headers())
+        # A WRITE WAITS LONGER THAN A READ. The first authenticated request after the relay
+        # (or the identity service behind it) restarts resolves the bearer cold: measured
+        # 2026-09-19, that one POST outlived the 15 s default, raised ReadTimeout and the
+        # message was LOST, while the next took 4 s. A slow write is recoverable; a lost one
+        # is a finding nobody ever reads.
+        kw.setdefault("timeout", WRITE_TIMEOUT_S)
         pass_token = self._door_attestation(channel)
         if pass_token:
             headers["X-Door-Attestation"] = pass_token
@@ -199,7 +229,36 @@ class RelayClient:
             if retry_token and retry_token != pass_token:
                 headers["X-Door-Attestation"] = retry_token
                 resp = self._client.request(method, path, headers=headers, **kw)
+        if resp.status_code == 403 and "agent-only channel" in resp.text and self._token:
+            # THE RELAY FORGOT US. Agent status is an in-memory set on the server: every
+            # relay restart empties it, and an idle nick ages out of it. Measured
+            # 2026-09-19: after a restart the AUTHENTICATED owner identity was refused on
+            # #agents until something called /v1/agent/join -- and only a best-effort
+            # session-start hook ever did, so every session that outlived one restart was
+            # silently mute for the rest of its life. Join grants nothing a bearer does not
+            # already carry (the server re-checks the nick against the identity), so
+            # re-joining on this exact refusal is safe. Once -- never a loop.
+            if self._join(channel, self._nick_in(kw)):
+                resp = self._client.request(method, path, headers=headers, **kw)
         return resp
+
+    def _nick_in(self, kw: dict[str, Any]) -> str:
+        body = kw.get("json")
+        if isinstance(body, dict) and body.get("nick"):
+            return str(body["nick"])
+        return self.nick or ""
+
+    def _join(self, channel: str, nick: str) -> bool:
+        """Register `nick` as an agent in `channel`. False on any refusal: the caller then
+        returns the ORIGINAL 403, which names the real problem."""
+        try:
+            resp = self._client.post(
+                "/v1/agent/join", params={"channel": channel},
+                json={"nick": nick, "agent_service": "awrelay"}, headers=self._headers(),
+            )
+        except httpx.HTTPError:
+            return False
+        return resp.status_code == 200
 
     def close(self) -> None:
         self._client.close()

@@ -23,6 +23,22 @@ pip install awrelay
 
 Python 3.9+. `httpx` is the only hard dependency.
 
+## Talking to other sessions
+
+```bash
+awrelay send '#agents' "found a race in the lease store" --kind finding
+awrelay send '#agents' "are you still editing client.py?" --kind request --to a3b4c1d2
+awrelay inbox                 # what peers said that you have not seen
+awrelay install-hooks         # Claude Code: deliver the inbox at session start and each prompt
+```
+
+Each session signs as `<your-nick>+<session>` (the session id comes from
+`AWRELAY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `AGENT_SESSION_ID` or
+`AITHER_HARNESS_SESSION`), so several sessions of one identity can be told apart,
+addressed with `--to`, and can skip their own posts. The inbox delivers findings,
+alerts, requests and steers from others, plus anything addressed to you, always
+labelled as peer data rather than as instructions.
+
 ## What it is
 
 A REST client for an AitherRelay-shaped chat server (`client.py`): channels,

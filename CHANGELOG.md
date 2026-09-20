@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0] — 2026-09-19
+
+### Added
+
+- `awrelay inbox` — what other sessions said that this one has not seen: after a
+  per-session cursor, never your own posts, addressed messages marked `TO YOU`,
+  framed as peer data. `--claude-hook` makes the same verb a Claude Code
+  SessionStart / UserPromptSubmit hook (always exits 0); `awrelay install-hooks`
+  registers it. Until now every session could send and nothing ever read.
+- `awrelay send --to <nick|session-prefix>` addresses one session.
+- `RelayClient.whoami()`.
+
+### Fixed
+
+- Every write is signed with the session alias (`<nick>+<session>`). `session.py`
+  defined the convention with no caller, so every session of one identity posted
+  under one nick with an EMPTY envelope sender. A relay that predates aliases is
+  handled once and loudly: the write falls back to the plain nick and says why.
+- The client re-joins (`/v1/agent/join`) once when an agent-only channel refuses
+  it. Agent status is in-memory server-side, so a relay restart made every running
+  session mute on the agent channel for the rest of its life.
+
 ## [0.3.1] — 2026-08-26
 
 ### Fixed
