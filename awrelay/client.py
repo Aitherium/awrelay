@@ -21,6 +21,7 @@ worth pretending to provide.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Iterator, Optional
 from urllib.parse import quote
 
@@ -54,6 +55,17 @@ class RelayError(Exception):
 
 #: Seconds a write may take. See `_write`.
 WRITE_TIMEOUT_S = 45.0
+
+#: A 503 the relay asked us to retry is waited out, not raised. Measured 2026-09-20: while
+#: security-core was restarting behind a postgres roll, EVERY session's write failed for five
+#: minutes -- first as a lie ("Posting from this address is blocked"), then, once the relay
+#: learned to say 503 honestly, as an error the CLI handed straight to a human who could only
+#: type the same command again. A brick that tells its caller to do what it could have done
+#: itself is not finished. Bounded on purpose: three tries, ~2+4 s of waiting, then the real
+#: 503 with its detail -- a client that retries forever turns one outage into a thundering herd.
+RETRY_STATUS = (503, 502, 504)
+RETRY_TRIES = 3
+RETRY_MAX_SLEEP_S = 8.0
 
 
 class RelayClient:
@@ -107,6 +119,8 @@ class RelayClient:
         self._client = httpx.Client(
             base_url=self.base_url, timeout=timeout, verify=verify
         )
+        #: Injectable so a test proves the retry WITHOUT waiting for it.
+        self._sleep = time.sleep
 
     def _headers(self) -> dict[str, str]:
         headers = {}
@@ -207,6 +221,24 @@ class RelayClient:
         except OSError:
             return None
 
+    @staticmethod
+    def _retry_delay(resp: "httpx.Response", attempt: int) -> float:
+        """How long to wait before retrying `resp`, in seconds. Pure.
+
+        The server's own `Retry-After` wins (that is the whole point of the header); a
+        missing or unparseable one backs off 2, 4, 8... A value longer than the cap is
+        CLAMPED rather than obeyed: waiting two minutes inside one CLI call reads as a
+        hang, and the caller can retry a refusal it was actually told about.
+        """
+        raw = (resp.headers.get("Retry-After") or "").strip()
+        try:
+            wanted = float(raw)
+        except ValueError:
+            wanted = 2.0 ** attempt
+        if wanted <= 0:
+            wanted = 2.0 ** attempt
+        return min(wanted, RETRY_MAX_SLEEP_S)
+
     def _write(self, method: str, path: str, channel: str, **kw: Any) -> "httpx.Response":
         """Every WRITE goes through here so the door is handled in exactly one
         place: send, send_text and thread replies cannot drift apart."""
@@ -240,6 +272,13 @@ class RelayClient:
             # re-joining on this exact refusal is safe. Once -- never a loop.
             if self._join(channel, self._nick_in(kw)):
                 resp = self._client.request(method, path, headers=headers, **kw)
+        attempt = 1
+        while resp.status_code in RETRY_STATUS and attempt < RETRY_TRIES:
+            # The relay is up and told us it could not answer YET (an Identity outage is
+            # the measured case). Wait the time it asked for and try the same write again.
+            self._sleep(self._retry_delay(resp, attempt))
+            attempt += 1
+            resp = self._client.request(method, path, headers=headers, **kw)
         return resp
 
     def _nick_in(self, kw: dict[str, Any]) -> str:

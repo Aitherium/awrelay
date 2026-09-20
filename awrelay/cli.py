@@ -79,7 +79,14 @@ def _retry_without_alias(client: RelayClient, exc: RelayError) -> bool:
     lost from develop for four weeks and nothing reported it)."""
     if not getattr(client, "alias_derived", False):
         return False
-    if "does not match authenticated identity" not in str(exc):
+    # Two shapes of the same server gap, measured on two different days: a relay
+    # with the alias half answers 403 "does not match authenticated identity" for
+    # an alias it cannot map; a relay WITHOUT it never gets that far -- its nick
+    # validator 400s the "+" itself ("Nick must be 2-32 chars: letters, numbers,
+    # _ - . only", 2026-09-20 after a peer's restart shipped an older image).
+    text = str(exc)
+    if ("does not match authenticated identity" not in text
+            and "Nick must be" not in text):
         return False
     print(f"awrelay: this relay refused the session alias {client.nick!r}; posting as "
           f"{client.identity_nick!r}. The server is missing session-alias support "
@@ -126,12 +133,77 @@ def _cmd_send(args: argparse.Namespace) -> int:
     except RelayError as exc:
         print(f"awrelay: {exc}", file=sys.stderr)
         return 1
+    except httpx.TransportError as exc:
+        # Nothing answered. A refusal is an answer and stays an error above; a
+        # relay that is DOWN must not cost the message -- it is queued on disk and
+        # flushed at the head of the next inbox read (every prompt, every tool
+        # call). Exit 0: the send WILL happen, and a script chaining on it should
+        # not treat an outage as its own failure.
+        from awrelay import outbox
+
+        env = Envelope.new(args.kind, client.nick or "", args.text, payload=payload)
+        if outbox.enqueue(client.nick or "", args.channel, env):
+            print(f"awrelay: the relay did not answer ({type(exc).__name__}); QUEUED for "
+                  f"{args.channel} -- flushes at the next prompt or tool call", file=sys.stderr)
+            return 0
+        print(f"awrelay: the relay did not answer ({type(exc).__name__}) and the outbox could "
+              f"not be written -- this message is LOST", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(result))
     else:
         who = f" as {client.nick}" if client.nick else ""
         print(f"sent to {args.channel}{who}: {args.text}")
     return 0
+
+
+def _flush_outbox(client, me: str, hook_event: str) -> None:
+    """Best-effort: a queued send lands as soon as the relay answers. Never raises --
+    the inbox read it precedes must still happen."""
+    from awrelay import outbox
+
+    # Two queues, not one. A send during an outage that ALSO had a cold identity
+    # cache could not learn its nick (the relay is what answers whoami), so it
+    # queued under the empty key -- and a later flush keyed on the resolved nick
+    # would walk past it forever. Measured while building ITD005: the very first
+    # message after a fresh box comes up is the one most likely to be in that
+    # state, and it is the one a peer is waiting on.
+    queues = [me] + ([""] if me and outbox.pending("") else [])
+    if not any(outbox.pending(q) for q in queues):
+        return
+    def _send(ch, env, agent):
+        # The same alias fallback the live send path has: a relay missing the
+        # alias half must not turn a queued line into an archived "refusal".
+        try:
+            return client.send(ch, env, agent=agent)
+        except RelayError as exc:
+            if not _retry_without_alias(client, exc):
+                raise
+            return client.send(ch, env, agent=agent)
+
+    def _send_as_me(ch, env, agent):
+        # An orphaned row carries no sender; sign it with the nick we now know,
+        # so it lands attributable instead of as another nameless "david".
+        if not env.sender:
+            env.sender = me
+        return _send(ch, env, agent)
+
+    sent = remaining = archived = 0
+    for queue in queues:
+        try:
+            s, r, a = outbox.flush(
+                queue, _send if queue == me else _send_as_me,
+                is_transport_error=lambda e: isinstance(e, httpx.TransportError))
+        except Exception as exc:  # noqa: BLE001 - logged; the read must go on
+            _hook_log(f"{hook_event or 'inbox'} outbox flush failed: "
+                      f"{type(exc).__name__}: {exc}")
+            return
+        sent, remaining, archived = sent + s, remaining + r, archived + a
+    note = f"outbox flush as {me}: sent {sent}, remaining {remaining}, archived {archived}"
+    if hook_event:
+        _hook_log(f"{hook_event} {note}")
+    elif sent or archived:
+        print(f"awrelay: {note}", file=sys.stderr)
 
 
 def _hook_log(msg: str) -> None:
@@ -177,6 +249,10 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
             if since < min_interval:
                 return 0
             inbox.mark_inturn(me, time.time())
+        # Flush what could not be sent while the relay was down BEFORE reading:
+        # a peer's answer to a line still in the queue cannot exist yet. Sits
+        # after the in-turn throttle on purpose -- one network touch per window.
+        _flush_outbox(client, me, hook_event)
         cursor = "" if args.all else inbox.read_cursor(me, args.channel)
         direct_cursor = inbox.read_cursor(me, inbox.direct_key(args.channel))
         rows = list(client.history(args.channel, limit=args.limit))

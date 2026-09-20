@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.1] — 2026-09-20
+
+### Fixed
+
+- A write the relay answered `503` with `Retry-After` is now waited out and retried
+  (3 tries, clamped at 8 s) instead of being handed to a human as an error. Measured
+  while security-core restarted behind a postgres roll: every session's write failed
+  for five minutes and the only remedy the CLI offered was typing the same command
+  again. A missing or unparseable header backs off 2, 4 s; a 4xx is never retried.
+
 ## [0.4.0] — 2026-09-19
 
 ### Added

@@ -1,6 +1,9 @@
 """The reading half of agent messaging: who am I, what is new for me, how it arrives."""
 
-from __future__ import annotations
+# The repo ruff config knows awrelay is first-party and wants it in its own block; the
+# --isolated run behind PQ002 does not, and wants it merged with httpx/pytest. One noqa
+# beats a file that is red under exactly one of the two gates.
+from __future__ import annotations  # noqa: I001
 
 import argparse
 import json
@@ -8,6 +11,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+
 from awrelay import cli, inbox, install
 from awrelay.client import RelayClient, RelayError
 from awrelay.envelope import Envelope
@@ -259,3 +263,63 @@ def test_a_write_waits_longer_than_a_read_and_a_dead_relay_is_one_line(monkeypat
     assert cli.main(["channels"]) == 1
     err = capsys.readouterr().err
     assert "did not answer" in err and "Traceback" not in err
+
+
+# ── a 503 the relay asked us to retry is waited out, not handed to a human ───
+
+def test_a_retryable_503_is_retried_with_the_servers_own_delay():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(503, headers={"Retry-After": "2"},
+                                  json={"detail": "Identity is unavailable; retry"})
+        return httpx.Response(200, json={"id": "m1"})
+
+    c = _client_with(handler)
+    slept: list[float] = []
+    c._sleep = slept.append
+    assert c.send("#agents", Envelope.new("finding", ME, "hi")) == {"id": "m1"}
+    assert calls["n"] == 3 and slept == [2.0, 2.0]
+
+
+def test_the_retry_is_bounded_and_the_real_refusal_survives():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(503, headers={"Retry-After": "600"},
+                              json={"detail": "Identity is unavailable; retry"})
+
+    c = _client_with(handler)
+    slept: list[float] = []
+    c._sleep = slept.append
+    with pytest.raises(RelayError, match="503"):
+        c.send("#agents", Envelope.new("finding", ME, "hi"))
+    # Three tries, and a two-minute Retry-After is CLAMPED -- never obeyed literally.
+    assert calls["n"] == 3 and slept == [8.0, 8.0]
+
+
+def test_a_missing_or_junk_retry_after_backs_off_instead_of_hammering():
+    resp = httpx.Response(503)
+    assert RelayClient._retry_delay(resp, 1) == 2.0
+    assert RelayClient._retry_delay(resp, 2) == 4.0
+    junk = httpx.Response(503, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    assert RelayClient._retry_delay(junk, 1) == 2.0
+    zero = httpx.Response(503, headers={"Retry-After": "0"})
+    assert RelayClient._retry_delay(zero, 1) == 2.0
+
+
+def test_a_400_is_never_retried():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(400, json={"detail": "bad"})
+
+    c = _client_with(handler)
+    c._sleep = lambda s: (_ for _ in ()).throw(AssertionError("slept on a 400"))
+    with pytest.raises(RelayError):
+        c.send("#agents", Envelope.new("finding", ME, "hi"))
+    assert calls["n"] == 1
