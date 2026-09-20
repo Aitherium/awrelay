@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 import httpx
 
@@ -168,11 +169,29 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
         me = client.nick or ""
         if not me:
             raise RelayError("the relay did not say who this bearer is")
+        direct_only = bool(getattr(args, "direct_only", False))
+        min_interval = float(getattr(args, "min_interval", 0.0) or 0.0)
+        if direct_only and min_interval > 0:
+            # Throttle BEFORE the network: PostToolUse fires every few seconds.
+            since = time.time() - inbox.last_inturn_at(me)
+            if since < min_interval:
+                return 0
+            inbox.mark_inturn(me, time.time())
         cursor = "" if args.all else inbox.read_cursor(me, args.channel)
+        direct_cursor = inbox.read_cursor(me, inbox.direct_key(args.channel))
         rows = list(client.history(args.channel, limit=args.limit))
-        delivered, newest = inbox.select(rows, me=me, identity=client.identity_nick,
-                                         cursor=cursor)
-        if not args.peek and not inbox.write_cursor(me, args.channel, newest):
+        if direct_only:
+            # The in-turn read: its cursor is the newest ADDRESSED row delivered and
+            # lives beside the channel's, so the prompt-time read is untouched.
+            delivered, newest = inbox.select(rows, me=me, identity=client.identity_nick,
+                                             cursor=direct_cursor or cursor,
+                                             direct_only=True)
+            cursor_key = inbox.direct_key(args.channel)
+        else:
+            delivered, newest = inbox.select(rows, me=me, identity=client.identity_nick,
+                                             cursor=cursor, direct_cursor=direct_cursor)
+            cursor_key = args.channel
+        if not args.peek and not inbox.write_cursor(me, cursor_key, newest):
             note = f"could not save the read cursor for {me}: these messages will repeat"
             if args.claude_hook:
                 _hook_log(note)
@@ -446,6 +465,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_inbox.add_argument("--peek", action="store_true", help="do not advance the read cursor")
     p_inbox.add_argument("--all", action="store_true", help="ignore the cursor (last hour)")
     p_inbox.add_argument("--session-id", default="")
+    p_inbox.add_argument("--direct-only", action="store_true",
+                         help="in-turn read (PostToolUse): only rows addressed to me; "
+                              "broadcasts wait for the prompt; nothing is shown twice")
+    p_inbox.add_argument("--min-interval", type=float, default=0.0,
+                         help="with --direct-only: seconds between relay reads (a working "
+                              "turn calls tools every few seconds; do not ask each time)")
     p_inbox.add_argument("--claude-hook", action="store_true",
                           help="run as a Claude Code hook: JSON on stdin, context on stdout, "
                                "always exit 0")

@@ -131,10 +131,17 @@ def is_mine(msg_nick: str, sender: str, me: str) -> bool:
 
 
 def select(messages: Iterable[dict], *, me: str, identity: str = "", cursor: str = "",
-           now: Optional[float] = None, limit: int = MAX_DELIVERED) -> tuple[list[dict], str]:
+           now: Optional[float] = None, limit: int = MAX_DELIVERED,
+           direct_cursor: str = "", direct_only: bool = False) -> tuple[list[dict], str]:
     """(delivered, new_cursor). `messages` are relay rows, oldest first. The cursor is the
     timestamp of the newest row SEEN -- skipped rows advance it too, or one noisy channel
-    would be re-scanned forever. With no cursor only the last PRIME_WINDOW_S is eligible."""
+    would be re-scanned forever. With no cursor only the last PRIME_WINDOW_S is eligible.
+
+    `direct_cursor` is the newest ADDRESSED row already delivered in-turn (PostToolUse):
+    direct rows at or below it are skipped here so a message shown mid-turn is not shown
+    again at the prompt. `direct_only` is the in-turn read itself: only addressed rows are
+    picked, and the returned cursor is the newest DIRECT row picked (not the newest row
+    seen), so broadcasts still reach the session at its next prompt."""
     now = now or time.time()
     floor = cursor
     if not floor:
@@ -159,6 +166,10 @@ def select(messages: Iterable[dict], *, me: str, identity: str = "", cursor: str
         kind = env.kind.value if env is not None else "message"
         if not direct and kind not in BROADCAST_KINDS:
             continue
+        if direct_only and not direct:
+            continue
+        if direct and direct_cursor and ts <= direct_cursor:
+            continue  # already delivered inside a turn
         # A nick that is neither the identity nor one of its aliases is somebody else's
         # account entirely; say so rather than present it as a sibling session.
         sibling = bool(identity) and (nick == identity or is_session_alias(nick, identity))
@@ -178,6 +189,10 @@ def select(messages: Iterable[dict], *, me: str, identity: str = "", cursor: str
     kept.sort(key=lambda m: m["ts"])
     if dropped and kept:
         kept[0] = dict(kept[0], dropped=dropped)
+    if direct_only:
+        # The in-turn cursor advances only over what was DELIVERED, never over
+        # what was merely seen: the prompt-time read still owns the broadcasts.
+        newest = max((m["ts"] for m in kept), default=cursor)
     return kept, newest
 
 
@@ -209,6 +224,24 @@ def frame(delivered: list[dict], *, me: str, channel: str) -> str:
 def _cursor_path(me: str, state_dir: Path = STATE_DIR) -> Path:
     safe = "".join(c if c.isalnum() or c in "+-_" else "_" for c in (me or "anonymous"))
     return state_dir / (safe + ".json")
+
+
+def direct_key(channel: str) -> str:
+    """Where the in-turn cursor lives: beside the channel's own, never in its place."""
+    return f"{channel}#direct"
+
+
+def last_inturn_at(me: str, *, state_dir: Path = STATE_DIR) -> float:
+    """When this session last asked the relay from inside a turn (0.0 = never)."""
+    try:
+        data = json.loads(_cursor_path(me, state_dir).read_text(encoding="utf-8"))
+        return float(data.get("#inturn_at") or 0.0) if isinstance(data, dict) else 0.0
+    except (OSError, ValueError, TypeError):
+        return 0.0
+
+
+def mark_inturn(me: str, when: float, *, state_dir: Path = STATE_DIR) -> bool:
+    return write_cursor(me, "#inturn_at", str(when), state_dir=state_dir)
 
 
 def read_cursor(me: str, channel: str, *, state_dir: Path = STATE_DIR) -> str:
