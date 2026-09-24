@@ -80,6 +80,7 @@ class RelayClient:
         doors_url: Optional[str] = None,
         humanity_source: Optional[Any] = None,
         humanity_path: Optional[Any] = None,
+        transport: Optional[httpx.BaseTransport] = None,
     ) -> None:
         """
         base_url  the relay server's origin, e.g. "https://irc.aitherium.com"
@@ -116,11 +117,31 @@ class RelayClient:
         #: channel -> (attestation, expires_at). A door pass is short-lived
         #: (minutes) by design, so it is cached per process, never on disk.
         self._door_cache: dict[str, tuple[str, float]] = {}
-        self._client = httpx.Client(
-            base_url=self.base_url, timeout=timeout, verify=verify
-        )
+        #: The httpx.Client is built on FIRST USE, not here. Building one loads a
+        #: TLS trust store -- measured 1-2 s per client on a Windows host with
+        #: truststore, and a whole-suite run that constructs one per test was
+        #: killed at 240 s -- so a caller (or a test) that injects its own
+        #: `_client`, or a `transport`, never pays for one it discards.
+        self._timeout = timeout
+        self._transport = transport
+        self._http: Optional[httpx.Client] = None
         #: Injectable so a test proves the retry WITHOUT waiting for it.
         self._sleep = time.sleep
+
+    @property
+    def _client(self) -> httpx.Client:
+        if self._http is None:
+            kw: dict[str, Any] = {"base_url": self.base_url, "timeout": self._timeout}
+            if self._transport is not None:
+                kw["transport"] = self._transport
+            else:
+                kw["verify"] = self._verify
+            self._http = httpx.Client(**kw)
+        return self._http
+
+    @_client.setter
+    def _client(self, value: httpx.Client) -> None:
+        self._http = value
 
     def _headers(self) -> dict[str, str]:
         headers = {}
@@ -300,7 +321,9 @@ class RelayClient:
         return resp.status_code == 200
 
     def close(self) -> None:
-        self._client.close()
+        # Never build a client just to close it.
+        if self._http is not None:
+            self._http.close()
 
     def __enter__(self) -> "RelayClient":
         return self

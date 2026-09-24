@@ -72,7 +72,8 @@ class A2AApprovalPendingError(Exception):
 
 class A2ABridge:
     def __init__(
-        self, base_url: str, *, timeout: float = 60.0, verify: bool | str = True
+        self, base_url: str, *, timeout: float = 60.0, verify: bool | str = True,
+        transport: Optional[httpx.BaseTransport] = None,
     ) -> None:
         """
         base_url  AitherA2A's origin, e.g. "https://a2a.aitherium.com" or a
@@ -87,11 +88,33 @@ class A2ABridge:
         exists to preserve.
         """
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, verify=verify)
+        # Built on first use, not here: an httpx.Client loads a TLS trust store
+        # (1-2 s per client measured on a Windows host), and a caller that
+        # injects `_client` or `transport` should never pay for one it discards.
+        self._timeout = timeout
+        self._verify = verify
+        self._transport = transport
+        self._http: Optional[httpx.Client] = None
         self._grants: dict[str, str] = {}
 
+    @property
+    def _client(self) -> httpx.Client:
+        if self._http is None:
+            kw: dict[str, Any] = {"base_url": self.base_url, "timeout": self._timeout}
+            if self._transport is not None:
+                kw["transport"] = self._transport
+            else:
+                kw["verify"] = self._verify
+            self._http = httpx.Client(**kw)
+        return self._http
+
+    @_client.setter
+    def _client(self, value: httpx.Client) -> None:
+        self._http = value
+
     def close(self) -> None:
-        self._client.close()
+        if self._http is not None:
+            self._http.close()
 
     def __enter__(self) -> "A2ABridge":
         return self
