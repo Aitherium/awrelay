@@ -1,7 +1,8 @@
 """The reading half of agent messaging: who am I, what is new for me, how it arrives."""
 
 # The repo ruff config knows awrelay is first-party and wants it in its own block; the
-# --isolated run behind PQ002 does not, and wants it merged with httpx/pytest. One noqa
+# --isolated run behind the import-order gate does not, and wants it merged with
+# httpx/pytest. One noqa
 # beats a file that is red under exactly one of the two gates.
 from __future__ import annotations  # noqa: I001
 
