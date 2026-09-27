@@ -55,20 +55,30 @@ _INSTALL_HINT = (
 
 
 def _client_from_env():
-    from awrelay.client import RelayClient
+    """Build the client through the CLI's identity path, never an anonymous one.
 
-    url = os.environ.get("AWRELAY_URL")
-    if not url:
+    Same order as the CLI: AWRELAY_TOKEN, else the session bearer; the relay binds the
+    nick to that identity and this session signs as its `<nick>+<session>` alias. No
+    identity is an error the tool call reports, never a walk-in post.
+    """
+    import argparse
+
+    from awrelay import cli
+
+    if not os.environ.get("AWRELAY_URL"):
         raise RuntimeError(
-            "AWRELAY_URL is not set. The MCP client config must set it "
-            "(and AWRELAY_TOKEN, AWRELAY_NICK) in the server's env block — "
-            "not passed per tool call. See this module's docstring."
+            "AWRELAY_URL is not set. The MCP client config must set it in the server's "
+            "env block, not per tool call. See this module's docstring."
         )
-    return RelayClient(
-        url,
-        token=os.environ.get("AWRELAY_TOKEN"),
-        nick=os.environ.get("AWRELAY_NICK"),
-    )
+    ns = argparse.Namespace(url=None, token=None, nick=None, command="send",
+                            session_id=os.environ.get("CLAUDE_SESSION_ID", ""))
+    try:
+        return cli._client_from_args(ns)
+    except SystemExit as exc:
+        raise RuntimeError(
+            "awrelay: no identity for the MCP server -- set AWRELAY_TOKEN or mint the "
+            "session bearer (python AitherOS/dev/tools/mint_session_bearer.py)."
+        ) from exc
 
 
 def _a2a_bridge_from_env():
