@@ -224,6 +224,7 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
     from awrelay import inbox
 
     hook_event = ""
+    hook_cwd = ""
     if args.claude_hook:
         try:
             data = json.loads(sys.stdin.read() or "{}")
@@ -234,6 +235,7 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
         args.session_id = (os.environ.get("AWRELAY_SESSION_ID", "").strip()
                            or str(data.get("session_id") or ""))
         hook_event = str(data.get("hook_event_name") or "UserPromptSubmit")
+        hook_cwd = str(data.get("cwd") or "")
     try:
         client = _client_from_args(args)
         if args.claude_hook:
@@ -273,6 +275,10 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
                 _hook_log(note)
             else:
                 print(f"awrelay: {note}", file=sys.stderr)
+        if args.claude_hook and args.session_id:
+            _record_session_state(args, client, me, rows, hook_event, hook_cwd,
+                                  cursor_key=cursor_key, newest=newest,
+                                  cursor=cursor, direct_cursor=direct_cursor)
     except (RelayError, SystemExit, OSError, ValueError) as exc:
         if args.claude_hook:
             _hook_log(f"{hook_event} inbox {args.channel}: {type(exc).__name__}: {exc}")
@@ -306,6 +312,34 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
     else:
         print(text or f"(nothing new for {me} in {args.channel})")
     return 0
+
+
+def _record_session_state(args, client, me, rows, hook_event, hook_cwd, *, cursor_key,
+                          newest, cursor, direct_cursor) -> None:
+    """The statusline's `relay N` and the local presence registry, written by the hook
+    that already paid for the network read -- the render path never touches the relay.
+
+    N = peer rows still queued for this session's NEXT prompt after this read (what the
+    prompt-time read would deliver now), uncapped. Presence is (re)written at
+    SessionStart; every later hook only refreshes its heartbeat."""
+    from awrelay import hookgate, inbox
+
+    peek = bool(args.peek)
+    main_after = newest if (cursor_key == args.channel and not peek) else cursor
+    direct_after = newest if (cursor_key != args.channel and not peek) else direct_cursor
+    try:
+        pending, _ = inbox.select(rows, me=me, identity=client.identity_nick,
+                                  cursor=main_after, direct_cursor=direct_after,
+                                  limit=10_000)
+        hookgate.write_status(args.session_id, nick=me, channel=args.channel,
+                              unread=len(pending))
+        if hook_event == "SessionStart":
+            hookgate.write_presence(args.session_id, nick=me,
+                                    cwd=hook_cwd or os.getcwd(), channel=args.channel)
+        else:
+            hookgate.heartbeat(args.session_id, time.time())
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never fail the read
+        _hook_log(f"{hook_event} session state: {type(exc).__name__}: {exc}")
 
 
 def _cmd_install_hooks(args: argparse.Namespace) -> int:
@@ -449,6 +483,21 @@ def _cmd_mark_read(args: argparse.Namespace) -> int:
 
 
 def _cmd_presence(args: argparse.Namespace) -> int:
+    if args.local or not args.channel:
+        # The sessions on THIS machine, from the registry the SessionStart hook writes
+        # (the relay's own presence is WebSocket-only; a hook cannot hold a socket).
+        from awrelay import hookgate
+        live = hookgate.live_sessions()
+        if args.json:
+            print(json.dumps(live))
+            return 0
+        if not live:
+            print("(no live local sessions)")
+            return 0
+        for s in live:
+            print(f"{s.get('nick', '?'):<22} {s.get('branch') or '-':<28} "
+                  f"{s.get('cwd', '')}  ({s.get('last_seen_s', 0):.0f}s ago)")
+        return 0
     client = _client_from_args(args)
     try:
         online = client.presence(args.channel)
@@ -601,8 +650,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_mark.add_argument("channel")
     p_mark.set_defaults(func=_cmd_mark_read)
 
-    p_presence = sub.add_parser("presence", help="who is actually connected right now in a channel")
-    p_presence.add_argument("channel")
+    p_presence = sub.add_parser(
+        "presence", help="who is actually connected right now in a channel; with no channel "
+                         "(or --local), the live Claude Code sessions on this machine")
+    p_presence.add_argument("channel", nargs="?", default="")
+    p_presence.add_argument("--local", action="store_true",
+                            help="list this machine's live sessions (nick, branch, cwd)")
     p_presence.set_defaults(func=_cmd_presence)
 
     p_react = sub.add_parser("react", help="toggle an emoji reaction on a message")

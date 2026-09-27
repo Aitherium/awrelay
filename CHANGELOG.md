@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0] — 2026-09-26
+
+### Added
+
+- `awrelay/hookgate.py`: a stdlib-only gate for the per-tool-call Claude Code hook,
+  run by path with `python -S -I`. The skip path is one interpreter start plus a `stat`
+  (no httpx, no package import); only when the interval has elapsed does it run the
+  in-turn read, in-process, on the same stdin. `--session-end` clears the session's
+  state files.
+- The inbox hook now caches `unread` (peer rows queued for the next prompt) per session
+  for a statusline to read without touching the network, and writes a local presence
+  record (nick, cwd, branch) at SessionStart, heartbeat on every hook, expiring after
+  30 minutes idle.
+- `awrelay presence` with no channel (or `--local`) lists this machine's live sessions.
+
 ## [0.4.1] — 2026-09-20
 
 ### Fixed
