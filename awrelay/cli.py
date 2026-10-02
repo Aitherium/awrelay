@@ -116,6 +116,10 @@ def _session_bearer() -> str | None:
         return None
 
 
+#: `send --no-queue` when nothing answered: EX_TEMPFAIL, distinct from a refusal (1).
+EXIT_NOT_DELIVERED = 75
+
+
 def _cmd_send(args: argparse.Namespace) -> int:
     client = _client_from_args(args)
     payload = json.loads(args.payload) if args.payload else {}
@@ -139,6 +143,13 @@ def _cmd_send(args: argparse.Namespace) -> int:
         # flushed at the head of the next inbox read (every prompt, every tool
         # call). Exit 0: the send WILL happen, and a script chaining on it should
         # not treat an outage as its own failure.
+        if getattr(args, "no_queue", False):
+            # A PAGER asked. It retries on its own clock and must know the line did not
+            # land: a queued line exits 0, which a pager read as "a human was told" while
+            # the fleet -- and the relay with it -- was down (2026-10-02 review).
+            print(f"awrelay: the relay did not answer ({type(exc).__name__}); NOT SENT and "
+                  f"not queued (--no-queue)", file=sys.stderr)
+            return EXIT_NOT_DELIVERED
         from awrelay import outbox
 
         env = Envelope.new(args.kind, client.nick or "", args.text, payload=payload)
@@ -586,6 +597,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("--session-id", default="",
                          help="sign as this session (default: CLAUDE_CODE_SESSION_ID / "
                               "AWRELAY_SESSION_ID / AGENT_SESSION_ID)")
+    p_send.add_argument("--no-queue", action="store_true",
+                         help="when the relay does not answer, exit 75 instead of queueing "
+                              "the message and exiting 0 (for pagers, which retry themselves)")
     p_send.set_defaults(func=_cmd_send)
 
     p_inbox = sub.add_parser(
