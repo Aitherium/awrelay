@@ -216,3 +216,29 @@ def test_prompt_read_zeroes_the_cache_and_session_start_writes_presence(
     assert hookgate.read_status(SID, tmp_path)["unread"] == 0
     live = hookgate.live_sessions(state_dir=tmp_path)
     assert [(s["nick"], s["cwd"]) for s in live] == [(ME, str(tmp_path))]
+
+
+def test_hooks_disabled_env_makes_the_gate_a_noop(tmp_path, monkeypatch):
+    """A probe timing the hook (adk claude doctor) must not heartbeat, stamp or read."""
+    monkeypatch.setenv("AWRELAY_HOOKS_DISABLED", "1")
+    calls = []
+    rc = hookgate.main(["--min-interval", "0"], stdin_text=_payload(), now=1000.0,
+                       state_dir=tmp_path, runner=lambda raw, extra: calls.append(raw))
+    assert rc == 0 and calls == []
+    assert not any(tmp_path.rglob("*")), "a disabled hook wrote state"
+
+
+def test_hooks_disabled_env_makes_inbox_claude_hook_a_noop(monkeypatch):
+    monkeypatch.setenv("AWRELAY_HOOKS_DISABLED", "1")
+
+    built = []
+
+    def no_network(*_a, **_k):  # the hook swallows exceptions, so RECORD, never raise
+        built.append(1)
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(cli, "_client_from_args", no_network)
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO(_payload(event="UserPromptSubmit")))
+    assert cli.main(["inbox", "--claude-hook"]) == 0
+    assert built == [], "a disabled hook built a relay client"

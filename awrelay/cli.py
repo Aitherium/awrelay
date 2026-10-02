@@ -223,6 +223,11 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
     context on stdout, and NEVER a non-zero exit -- a relay outage must not block a prompt."""
     from awrelay import inbox
 
+    if args.claude_hook:
+        from awrelay.hookgate import hooks_disabled
+
+        if hooks_disabled():  # a probe is running the hook: no read, no drain, no send
+            return 0
     hook_event = ""
     hook_cwd = ""
     if args.claude_hook:

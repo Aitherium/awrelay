@@ -41,6 +41,14 @@ import time
 from pathlib import Path
 
 STATE_DIR = Path.home() / ".aither" / "relay-inbox"
+#: Set by probes that RUN the hook commands (e.g. `adk claude doctor` timing them): every
+#: hook entrypoint returns 0 at once -- no heartbeat, no stamp, no inbox read or drain.
+HOOKS_DISABLED_ENV = "AWRELAY_HOOKS_DISABLED"
+
+
+def hooks_disabled() -> bool:
+    return os.environ.get(HOOKS_DISABLED_ENV, "").strip().lower() in ("1", "true", "yes")
+
 DEFAULT_INTERVAL_S = 20.0
 #: A session that has not run a tool or taken a prompt for this long is not "live".
 PRESENCE_TTL_S = 30 * 60
@@ -244,6 +252,8 @@ def _run_inturn_read(raw: str, extra: list[str]) -> int:
 def main(argv: list[str] | None = None, *, stdin_text: str | None = None,
          now: float | None = None, state_dir: Path = STATE_DIR, runner=None) -> int:
     """Hook contract: never a non-zero exit, never a traceback on stdout."""
+    if hooks_disabled():
+        return 0
     args = list(sys.argv[1:] if argv is None else argv)
     interval = DEFAULT_INTERVAL_S
     session_end = False
