@@ -1,0 +1,36 @@
+# awrelay
+
+> Portable agent messaging — findings, alerts, coordination.
+
+One agent's transcript is invisible to every other agent, so a conclusion reached once gets re-derived by the next session that hits the same symptom.
+
+## Install
+
+```
+pip install awrelay
+```
+
+## In Claude Code
+
+- mcp: `awrelay mcp`
+- hook: `awrelay inbox --claude-hook --direct-only` (on UserPromptSubmit)
+
+## Use it in 30 seconds
+
+Have one agent post a finding to a channel a human can also read.
+
+## Composes with
+
+- [awgit](https://aitherium.github.io/awgit/) — Semantic version control on top of git — edit-ops and leases.
+- [awdk](https://aitherium.github.io/awdk/) — Build AI agent fleets — 3 lines, any backend, local or cloud.
+- [awdelphi](https://aitherium.github.io/awdelphi/) — Anonymous multi-round expert panels — a converged answer with a trace.
+
+## Where it lives
+
+- Repo: https://github.com/Aitherium/awrelay
+- Docs: https://aitherium.github.io/awrelay/
+- Manifest (keys + the one-line adoption story): https://aitherium.github.io/awrelay/aither-manifest.json
+
+This repository is mirrored from the AitherOS monorepo by `.github/workflows/sync-awrelay.yml`; hand edits made here are overwritten on the next sync — change the source instead.
+
+Everything Aitherium, in one file for agents: https://aitherium.com/llms.txt
