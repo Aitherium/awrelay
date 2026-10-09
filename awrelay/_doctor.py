@@ -23,7 +23,15 @@ import sys
 #: package cannot read the registry, and a doctor that guessed at the family
 #: would go stale in silence. Regenerate to update.
 SELF = 'awrelay'
-FAMILY = ['awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awclassify', 'awdecide', 'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet', 'awnode', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscope', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite', 'awstorage', 'awsuite', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet']
+FAMILY = [
+    'awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awclassify', 'awdecide',
+    'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit',
+    'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet',
+    'awplay', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse',
+    'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun',
+    'awscope', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite', 'awstorage', 'awsuite',
+    'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet',
+]
 PAIRS_WITH = ['awdelphi', 'adk', 'awgit']
 
 #: This brick's OWN config, read out of its source at generation time.
@@ -33,7 +41,10 @@ PAIRS_WITH = ['awdelphi', 'adk', 'awgit']
 #: platform-wide vars it also touches would be noise, and a doctor that floods
 #: gets ignored.
 ENV_REQUIRED = []
-ENV_OPTIONAL = ['AWRELAY_A2A_URL', 'AWRELAY_INBOX_CHANNEL', 'AWRELAY_NICK', 'AWRELAY_SESSION_ID', 'AWRELAY_TOKEN', 'AWRELAY_URL']
+ENV_OPTIONAL = [
+    'AWRELAY_A2A_URL', 'AWRELAY_INBOX_CHANNEL', 'AWRELAY_NICK', 'AWRELAY_SESSION_ID',
+    'AWRELAY_TOKEN', 'AWRELAY_URL',
+]
 
 
 def _installed(mod: str) -> "str | None":
