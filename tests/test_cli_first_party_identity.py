@@ -60,6 +60,20 @@ def test_without_any_identity_the_cli_refuses_and_names_the_mint_command(tmp_pat
     assert "no identity" in err
 
 
+def test_awrelay_token_env_is_used_without_any_argv_token(tmp_path, monkeypatch):
+    """The token must be passable WITHOUT argv: a `--token <bearer>` on the command line is
+    readable by every local process (WMI Win32_Process.CommandLine, Task Manager, `ps`).
+    Measured 2026-10-08: the desk spawned `awrelay --token <bearer> history ...` every few
+    seconds. Callers that spawn awrelay set AWRELAY_TOKEN in the child env instead, and it
+    must win over the session-bearer file."""
+    bearer = tmp_path / "session-bearer"
+    bearer.write_text("session-tok", encoding="utf-8")
+    monkeypatch.setattr(cli, "_BEARER_FILE", str(bearer))
+    monkeypatch.setenv("AWRELAY_TOKEN", "env-tok")
+    client = cli._client_from_args(_args(nick="me"))
+    assert client._token == "env-tok", "AWRELAY_TOKEN must be honoured when --token is absent"
+
+
 def test_explicit_token_and_nick_still_win(tmp_path, monkeypatch):
     bearer = tmp_path / "session-bearer"
     bearer.write_text("session-tok", encoding="utf-8")
