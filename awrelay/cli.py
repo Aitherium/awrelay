@@ -179,7 +179,29 @@ def _flush_outbox(client, me: str, hook_event: str) -> None:
     # would walk past it forever. Measured while building ITD005: the very first
     # message after a fresh box comes up is the one most likely to be in that
     # state, and it is the one a peer is waiting on.
-    queues = [me] + ([""] if me and outbox.pending("") else [])
+    #
+    # A third: the BARE identity nick. Host scripts (watchdog pages, op announcements)
+    # send with no session id, so they queue under the bare "<nick>" -- and every reader is a
+    # session ("<nick>+<sid>"), so that queue was never flushed. Measured 2026-10-14:
+    # one host's bare-nick queue held 1156 rows back to 2026-09-26, one flush in its whole life.
+    # Same bearer, same person: the session drains it and posts those rows AS the bare
+    # nick they were written under.
+    identity = str(getattr(client, "identity_nick", "") or "")
+    queues = [me]
+    if identity and identity != me and outbox.pending(identity):
+        queues.append(identity)
+    if me and outbox.pending(""):
+        queues.append("")
+    # Every OTHER nick's queue (ended sessions, agent nicks) only ages out here: its
+    # stale rows are archived, its fresh rows left for their owner. Throttled.
+    try:
+        _changed, swept = outbox.sweep(skip=(me, identity, ""),
+                                       min_interval_s=outbox.SWEEP_INTERVAL_S)
+        if swept:
+            _hook_log(f"{hook_event or 'inbox'} outbox sweep: archived {swept} stale row(s) "
+                      f"from {_changed} queue(s)")
+    except Exception as exc:  # noqa: BLE001 - logged; the read must go on
+        _hook_log(f"{hook_event or 'inbox'} outbox sweep failed: {type(exc).__name__}: {exc}")
     if not any(outbox.pending(q) for q in queues):
         return
     def _send(ch, env, agent):
@@ -199,11 +221,24 @@ def _flush_outbox(client, me: str, hook_event: str) -> None:
             env.sender = me
         return _send(ch, env, agent)
 
+    def _send_as_identity(ch, env, agent):
+        # Post under the nick the row was queued as, then restore the session's own.
+        saved, saved_alias = client.nick, getattr(client, "alias_derived", False)
+        client.nick, client.alias_derived = identity, False
+        try:
+            if not env.sender:
+                env.sender = identity
+            return client.send(ch, env, agent=agent)
+        finally:
+            client.nick, client.alias_derived = saved, saved_alias
+
+    # Later keys win: `me` must map to the plain sender even if a key collides.
+    senders = {identity: _send_as_identity, "": _send_as_me, me: _send}
     sent = remaining = archived = 0
     for queue in queues:
         try:
             s, r, a = outbox.flush(
-                queue, _send if queue == me else _send_as_me,
+                queue, senders.get(queue, _send_as_me),
                 is_transport_error=lambda e: isinstance(e, httpx.TransportError))
         except Exception as exc:  # noqa: BLE001 - logged; the read must go on
             _hook_log(f"{hook_event or 'inbox'} outbox flush failed: "

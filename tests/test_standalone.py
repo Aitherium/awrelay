@@ -105,6 +105,23 @@ def test_send_raises_relay_error_on_non_2xx():
         client.send("#agent-lounge", Envelope.new("message", "agent-a", "hi"))
 
 
+def test_an_authenticated_history_read_names_its_nick_for_presence():
+    """The relay counts X-Relay-Nick on a bearer read as an HTTP-presence heartbeat;
+    an anonymous read must not claim a nick."""
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("x-relay-nick"))
+        return httpx.Response(200, json={"messages": []})
+
+    list(_mock_client(handler).history("#agents"))
+    anon = RelayClient("https://relay.example", nick="agent-a")
+    anon._client = httpx.Client(base_url="https://relay.example",
+                                transport=httpx.MockTransport(handler))
+    list(anon.history("#agents"))
+    assert seen == ["agent-a", None]
+
+
 def test_history_filters_to_envelopes_only():
     plain = {"nick": "human1", "content": "hey everyone"}
     enveloped = {

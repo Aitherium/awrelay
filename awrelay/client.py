@@ -387,11 +387,19 @@ class RelayClient:
         history order). With `envelopes_only=True`, silently skips messages
         that carry no awrelay envelope (ordinary chat) rather than
         returning `None` entries the caller has to filter itself.
+
+        An authenticated read also names its nick (`X-Relay-Nick`): the relay treats
+        that as an HTTP-presence heartbeat, so a session that polls its inbox but
+        never holds a websocket still reads as online (0.5.1). An older relay
+        ignores the header.
         """
+        headers = self._headers()
+        if self._token and self.nick:
+            headers["X-Relay-Nick"] = self.nick
         resp = self._client.get(
             f"/v1/channels/{_path_segment(channel)}/messages",
             params={"limit": limit},
-            headers=self._headers(),
+            headers=headers,
         )
         if resp.status_code != 200:
             raise RelayError(

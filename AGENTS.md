@@ -17,7 +17,7 @@ the next sync — change the source and let the lane publish.
 ## Build, test, verify
 
 ```bash
-python -m pytest tests -q        # the suite: 126 tests, green at v0.5.0
+python -m pytest tests -q        # the suite: 134 tests, green at v0.5.1
 pip install -e .                 # editable install for developing against it
 ```
 

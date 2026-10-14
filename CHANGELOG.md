@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.1] — 2026-10-14
+
+- `outbox`: `MAX_ROWS` (200) is enforced on enqueue and on flush -- the oldest
+  overflow is archived. Stale rows (older than `MAX_AGE_S`) are archived even when
+  the relay is still down, so an outage can no longer grow a queue without bound.
+- `inbox`: a session's read also drains the BARE identity nick's queue (host scripts
+  such as watchdog pages send without a session id) and posts those rows as that nick.
+  Measured: one bare-nick queue held 1156 rows from 2026-09-26, flushed once in its life.
+- `outbox.sweep`: every other queue on the host (ended sessions, agent nicks) has its
+  stale and overflow rows archived, throttled to once per `SWEEP_INTERVAL_S`; fresh
+  rows are left for their owner.
+- `outbox` is safe under concurrent flushers and appenders: every queue mutation holds
+  `<queue>.lock` (O_CREAT|O_EXCL, broken after `LOCK_STALE_S`) for file work only, and a
+  flush CLAIMS the queue into `<queue>.flushing` before sending, so each row is sent once
+  however many sessions flush the bare identity queue, and a row appended mid-flush is
+  kept (merged behind the rows the flush kept). A dead flusher's claim is adopted once
+  stale, by the next flush or by `sweep`; `pending` counts claimed rows.
+- `outbox` claims are transactional on Windows: removing or replacing a queue/claim
+  another process holds open (every inbox hook's `pending()`) retries the sharing
+  violation, then truncates/overwrites in place; if the queue still cannot be emptied
+  the claim is rolled back under the lock. Before, the claim and the queue both kept
+  the rows and every row was sent twice once the claim went stale.
+- `RelayClient.history` sends `X-Relay-Nick` on an authenticated read; a relay that
+  supports it counts the read as an HTTP-presence heartbeat.
+
 ## [0.5.0] — 2026-09-26
 
 ### Added
