@@ -44,10 +44,14 @@ same two functions, so they cannot disagree about what an alias is.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
+from pathlib import Path
 
-__all__ = ["SEP", "is_session_alias", "session_nick", "current_session_id"]
+__all__ = ["SEP", "is_session_alias", "session_nick", "current_session_id",
+           "session_label", "write_session_label", "labelled_nick"]
 
 SEP = "+"
 
@@ -112,3 +116,63 @@ def current_session_id() -> str:
         if val:
             return val
     return ""
+
+
+# -- human labels ------------------------------------------------------------
+# `david+7f96f674` says WHICH session but not WHAT it is doing. Every surface that
+# names a session (relay inbox, session-focus, awsh, rooms) reads one registry so they
+# all show the same words: one JSON file per session, written by the Claude Code
+# title hook (`.claude/hooks/aither_session_title.py`) or any harness that knows its task.
+
+def _labels_dir() -> Path:
+    raw = os.environ.get("AWRELAY_SESSION_LABELS", "").strip()
+    return Path(raw) if raw else Path.home() / ".aither" / "session-labels"
+
+
+def write_session_label(session_id: str, title: str, *, source: str = "hook",
+                        cwd: str = "", root: Path | None = None) -> bool:
+    """Record `title` for `session_id`. False (never raises) when it cannot."""
+    sid = re.sub(r"[^A-Za-z0-9-]", "", str(session_id or ""))
+    title = " ".join(str(title or "").split())[:80]
+    if len(sid) < 6 or not title:
+        return False
+    d = root or _labels_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f".{sid}.tmp"
+        tmp.write_text(json.dumps({"session_id": sid, "title": title, "source": source,
+                                   "cwd": cwd, "updated": time.time()}), encoding="utf-8")
+        os.replace(tmp, d / f"{sid}.json")
+        return True
+    except OSError:
+        return False
+
+
+def session_label(nick_or_id: str, *, root: Path | None = None) -> str:
+    """The label for a session id, id prefix, or `<nick>+<prefix>` alias, or "".
+
+    "" when nothing matches OR the prefix matches more than one session: a wrong
+    label is worse than none.
+    """
+    raw = str(nick_or_id or "")
+    key = raw.rsplit(SEP, 1)[1] if SEP in raw else raw
+    key = re.sub(r"[^A-Za-z0-9-]", "", key)
+    if len(key) < 6:
+        return ""
+    d = root or _labels_dir()
+    try:
+        hits = [p for p in d.glob(f"{key}*.json")]
+    except OSError:
+        return ""
+    if len(hits) != 1:
+        return ""
+    try:
+        return str(json.loads(hits[0].read_text(encoding="utf-8")).get("title") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def labelled_nick(nick: str, *, root: Path | None = None) -> str:
+    """`david+7f96f674 "Darkmatter body shapes"` -- the nick, plus its label if known."""
+    label = session_label(nick, root=root) if SEP in str(nick or "") else ""
+    return f'{nick} "{label}"' if label else str(nick or "")

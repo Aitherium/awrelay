@@ -95,3 +95,18 @@ def test_current_session_id_is_empty_rather_than_invented(monkeypatch):
     for var in ("AWRELAY_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "AGENT_SESSION_ID"):
         monkeypatch.delenv(var, raising=False)
     assert current_session_id() == ""
+
+
+# --- human labels -------------------------------------------------------------
+
+def test_a_label_follows_the_alias_and_stays_silent_when_unsure(tmp_path):
+    from awrelay.session import labelled_nick, session_label, write_session_label
+    assert write_session_label("7f96f674-4f2c-4989", "Darkmatter physics", root=tmp_path)
+    assert session_label("dana+7f96f674", root=tmp_path) == "Darkmatter physics"
+    assert labelled_nick("dana+7f96f674", root=tmp_path) == 'dana+7f96f674 "Darkmatter physics"'
+    # a prefix two sessions share names neither: a wrong label is worse than none
+    assert write_session_label("7f96aaaa-0000", "Other", root=tmp_path)
+    assert session_label("7f96", root=tmp_path) == ""
+    assert session_label("dana+7f96aa", root=tmp_path) == "Other"
+    assert labelled_nick("dana", root=tmp_path) == "dana"
+    assert not write_session_label("x", "too short an id", root=tmp_path)
