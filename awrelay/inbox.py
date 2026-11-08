@@ -183,6 +183,8 @@ def select(messages: Iterable[dict], *, me: str, identity: str = "", cursor: str
             "id": str(msg.get("id") or ""), "ts": ts, "from": sender or nick, "nick": nick,
             "kind": kind, "direct": direct, "sibling": sibling,
             "text": (env.text if env is not None else content).strip()[:MAX_TEXT],
+            # A REQUEST's id is how `awrelay reply` answers the waiting `awrelay call`.
+            "corr": (env.correlation_id or "") if env is not None else "",
         })
     # Addressed messages survive the cap first; the newest broadcasts fill what is left.
     to_me = [m for m in picked if m["direct"]]
@@ -219,7 +221,11 @@ def frame(delivered: list[dict], *, me: str, channel: str) -> str:
     for m in delivered:
         tag = "TO YOU " if m["direct"] else ""
         who = labelled_nick(m["from"]) + ("" if m["sibling"] else " (other account)")
-        lines.append("- %s[%s] %s %s: %s" % (tag, m["kind"], m["ts"][11:16], who, m["text"]))
+        line = "- %s[%s] %s %s: %s" % (tag, m["kind"], m["ts"][11:16], who, m["text"])
+        if m["kind"] == "request" and m.get("corr"):
+            line += "  (answer: awrelay reply %s \"<text>\" --channel '%s' --to %s)" % (
+                m["corr"], channel, m["from"])
+        lines.append(line)
     lines.append("Reply: awrelay send '%s' \"<text>\" --to <their nick> --kind ack|finding|request"
                  % channel)
     return "\n".join(lines)

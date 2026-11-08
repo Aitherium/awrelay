@@ -3,6 +3,8 @@
     awrelay send '#agent-lounge' "found a race condition" --kind finding
     awrelay history '#agent-lounge' --envelopes-only
     awrelay channels
+    awrelay call '#agents' "rerun the gate on #15130" --to lyra --await 120
+    awrelay reply 3f2a9c... "done, exit 0"
 
 Connection is read from flags or env vars (AWRELAY_URL, AWRELAY_TOKEN,
 AWRELAY_NICK) — flags win. No config file: a messaging CLI that silently
@@ -12,6 +14,15 @@ Exit codes: 0 success, 1 the relay refused/was unreachable (RelayError),
 2 the command could not run at all (bad args, missing env). Matches the
 awgit/awgraph convention: a script can tell "the relay said no" from
 "this invocation was wrong" from "nothing matched".
+
+`call` and `reply` are the request/response pair and use their OWN codes, so a
+script waiting on a peer can branch on why it stopped waiting:
+    call   0 a reply arrived (its text on stdout) - 2 bad args, or the relay
+           refused / did not answer (the send, or CALL_POLL_FAILURES polls in a
+           row) - 3 no reply within --await seconds (EXIT_CALL_TIMEOUT)
+    reply  0 sent - 2 bad args, or the relay refused / did not answer
+A call is never queued in the outbox: a request nobody can receive cannot be
+answered, so an outage is exit 2, not a silent 0.
 """
 
 from __future__ import annotations
@@ -21,11 +32,12 @@ import json
 import os
 import sys
 import time
+import uuid
 
 import httpx
 
 from awrelay.client import RelayClient, RelayError
-from awrelay.envelope import Envelope
+from awrelay.envelope import Envelope, Kind
 
 
 def _client_from_args(args: argparse.Namespace) -> RelayClient:
@@ -393,6 +405,163 @@ def _record_session_state(args, client, me, rows, hook_event, hook_cwd, *, curso
         _hook_log(f"{hook_event} session state: {type(exc).__name__}: {exc}")
 
 
+#: `call` waited --await seconds and no reply carrying its correlation_id arrived.
+EXIT_CALL_TIMEOUT = 3
+#: `call`/`reply`: bad arguments, or the relay refused / did not answer.
+EXIT_CALL_TRANSPORT = 2
+#: Consecutive failed polls a `call` tolerates before it calls the relay gone.
+CALL_POLL_FAILURES = 3
+#: Upper bound on --await: a call is a conversation turn, not a scheduler.
+CALL_MAX_AWAIT_S = 86400.0
+
+# Injected so tests drive time without sleeping.
+_sleep = time.sleep
+_now = time.monotonic
+
+
+def _bad_token(value: str, what: str) -> str | None:
+    """Why `value` cannot be a channel / nick / correlation id, or None."""
+    if not value or not value.strip():
+        return f"{what} is empty"
+    if any(c.isspace() for c in value) or len(value) > 128:
+        return f"{what} {value!r} must be 1-128 characters with no whitespace"
+    return None
+
+
+def _validate_call(args: argparse.Namespace) -> str | None:
+    problem = _bad_token(args.channel, "channel")
+    if problem:
+        return problem
+    if not (args.text or "").strip():
+        return "text is empty"
+    to = [t.strip() for t in (args.to or []) if t and t.strip()]
+    if not to:
+        return "--to is required: a call is addressed to a nick"
+    for nick in to:
+        problem = _bad_token(nick, "--to")
+        if problem:
+            return problem
+    if not (0 < args.await_s <= CALL_MAX_AWAIT_S):
+        return f"--await must be > 0 and <= {int(CALL_MAX_AWAIT_S)} seconds"
+    if not (0 < args.interval <= args.await_s):
+        return "--interval must be > 0 and no longer than --await"
+    if args.limit < 1:
+        return "--limit must be >= 1"
+    if args.payload:
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as exc:
+            return f"--payload is not JSON: {exc}"
+        if not isinstance(payload, dict):
+            return "--payload must be a JSON object"
+    return None
+
+
+def find_reply(items, correlation_id: str) -> Envelope | None:
+    """The first envelope answering `correlation_id`, or None.
+
+    A reply is ANY envelope carrying the same correlation_id that is not itself a
+    REQUEST -- the call's own request shares the id and must never count as its
+    answer. Envelopes with another correlation_id (or none) are ignored."""
+    for item in items:
+        if not isinstance(item, Envelope):
+            continue
+        if item.correlation_id == correlation_id and item.kind is not Kind.REQUEST:
+            return item
+    return None
+
+
+def _send_retrying_alias(client: RelayClient, channel: str, build) -> dict:
+    try:
+        return client.send(channel, build())
+    except RelayError as exc:
+        if not _retry_without_alias(client, exc):
+            raise
+        return client.send(channel, build())
+
+
+def _cmd_call(args: argparse.Namespace) -> int:
+    problem = _validate_call(args)
+    if problem:
+        print(f"awrelay call: {problem}", file=sys.stderr)
+        return EXIT_CALL_TRANSPORT
+    client = _client_from_args(args)
+    corr = uuid.uuid4().hex
+    payload = json.loads(args.payload) if args.payload else {}
+    payload = dict(payload, to=[t.strip() for t in args.to if t.strip()],
+                   reply_channel=args.channel, await_s=args.await_s)
+
+    def build() -> Envelope:
+        return Envelope.new(Kind.REQUEST, client.nick or "", args.text, payload=payload,
+                            correlation_id=corr)
+
+    try:
+        _send_retrying_alias(client, args.channel, build)
+    except (RelayError, httpx.HTTPError) as exc:
+        print(f"awrelay call: request not sent ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return EXIT_CALL_TRANSPORT
+    print(f"awrelay call: request {corr} sent to {args.channel}; awaiting a reply for "
+          f"{args.await_s:g}s", file=sys.stderr)
+
+    deadline = _now() + args.await_s
+    failures = 0
+    while True:
+        reply = None
+        try:
+            reply = find_reply(
+                client.history(args.channel, limit=args.limit, envelopes_only=True), corr)
+            failures = 0
+        except (RelayError, httpx.HTTPError) as exc:
+            failures += 1
+            print(f"awrelay call: poll failed ({type(exc).__name__}: {exc})", file=sys.stderr)
+            if failures >= CALL_POLL_FAILURES:
+                print(f"awrelay call: the relay failed {failures} polls in a row; giving up "
+                      f"on {corr}", file=sys.stderr)
+                return EXIT_CALL_TRANSPORT
+        if reply is not None:
+            if args.json:
+                print(json.dumps({"correlation_id": corr, "kind": reply.kind.value,
+                                  "sender": reply.sender, "text": reply.text,
+                                  "payload": reply.payload, "sent_at": reply.sent_at}))
+            else:
+                print(reply.text)
+            return 0
+        remaining = deadline - _now()
+        if remaining <= 0:
+            print(f"awrelay call: no reply to {corr} within {args.await_s:g}s",
+                  file=sys.stderr)
+            return EXIT_CALL_TIMEOUT
+        _sleep(min(args.interval, remaining))
+
+
+def _cmd_reply(args: argparse.Namespace) -> int:
+    problem = (_bad_token(args.correlation_id, "correlation_id")
+               or _bad_token(args.channel, "--channel")
+               or (None if (args.text or "").strip() else "text is empty"))
+    for nick in args.to or []:
+        problem = problem or _bad_token(nick.strip(), "--to")
+    if problem:
+        print(f"awrelay reply: {problem}", file=sys.stderr)
+        return EXIT_CALL_TRANSPORT
+    client = _client_from_args(args)
+    payload = {"to": [t.strip() for t in args.to]} if args.to else {}
+
+    def build() -> Envelope:
+        return Envelope.new(Kind.ACK, client.nick or "", args.text, payload=payload,
+                            correlation_id=args.correlation_id)
+
+    try:
+        result = _send_retrying_alias(client, args.channel, build)
+    except (RelayError, httpx.HTTPError) as exc:
+        print(f"awrelay reply: not sent ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return EXIT_CALL_TRANSPORT
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(f"replied to {args.correlation_id} in {args.channel}")
+    return 0
+
+
 def _cmd_install_hooks(args: argparse.Namespace) -> int:
     from awrelay.install import install
     return install(user=not args.project, dry_run=args.dry_run, uninstall=args.uninstall)
@@ -636,6 +805,36 @@ def build_parser() -> argparse.ArgumentParser:
                          help="when the relay does not answer, exit 75 instead of queueing "
                               "the message and exiting 0 (for pagers, which retry themselves)")
     p_send.set_defaults(func=_cmd_send)
+
+    p_call = sub.add_parser(
+        "call", help="send a request to a nick and wait for the reply carrying its "
+                     "correlation_id (exit 0 reply on stdout, 3 timeout, 2 bad args/transport)")
+    p_call.add_argument("channel")
+    p_call.add_argument("text")
+    p_call.add_argument("--to", action="append", default=[], required=True,
+                        help="the nick to ask (repeatable)")
+    p_call.add_argument("--await", dest="await_s", type=float, default=60.0,
+                        help="seconds to wait for a reply (default 60)")
+    p_call.add_argument("--interval", type=float, default=2.0,
+                        help="seconds between history polls (default 2)")
+    p_call.add_argument("--limit", type=int, default=100,
+                        help="recent messages scanned per poll (default 100)")
+    p_call.add_argument("--payload", help="JSON object for the request payload")
+    p_call.add_argument("--session-id", default="")
+    p_call.set_defaults(func=_cmd_call)
+
+    p_reply = sub.add_parser(
+        "reply", help="answer a request by its correlation_id (an ack carrying that id)")
+    p_reply.add_argument("correlation_id")
+    p_reply.add_argument("text")
+    p_reply.add_argument("--channel",
+                         default=os.environ.get("AWRELAY_INBOX_CHANNEL", "#agents"),
+                         help="where the caller waits: the request's channel (default "
+                              "$AWRELAY_INBOX_CHANNEL or #agents)")
+    p_reply.add_argument("--to", action="append", default=[],
+                         help="address the caller's nick (repeatable)")
+    p_reply.add_argument("--session-id", default="")
+    p_reply.set_defaults(func=_cmd_reply)
 
     p_inbox = sub.add_parser(
         "inbox", help="what other sessions said that this one has not seen")

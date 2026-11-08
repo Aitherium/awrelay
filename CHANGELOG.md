@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.2] — 2026-11-07
+
+- `awrelay call <channel> "<text>" --to <nick> --await N`: sends a `request` envelope
+  with a fresh `correlation_id`, polls the channel's history until an envelope carrying
+  that id (any kind but `request`) arrives. Exit 0 with the reply text on stdout
+  (`--json` for the envelope), 3 on timeout, 2 on bad args or a relay that refused /
+  stopped answering. Arguments are validated before anything is sent; a call is never
+  queued in the outbox.
+- `awrelay reply <correlation_id> "<text>" [--channel C] [--to nick]`: the `ack` that
+  answers a call.
+- `inbox`: a `request` row now shows its `awrelay reply <id> ...` line, so the peer that
+  reads it can answer without decoding the envelope.
+
 ## [0.5.1] — 2026-10-14
 
 - `outbox`: `MAX_ROWS` (200) is enforced on enqueue and on flush -- the oldest
