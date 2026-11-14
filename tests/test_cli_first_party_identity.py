@@ -56,7 +56,7 @@ def test_without_any_identity_the_cli_refuses_and_names_the_mint_command(tmp_pat
         cli._client_from_args(_args())
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "mint_session_bearer.py" in err, "the refusal must name the remedy"
+    assert "adk login" in err, "the refusal must name the remedy a stranger can run"
     assert "no identity" in err
 
 

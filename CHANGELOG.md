@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.3] — 2026-11-13
+
+- A person on the team talks from a terminal: `awrelay tail [#channel]` prints the last
+  messages and follows new ones (default `#aitherium-general`; `--seconds` bounds it),
+  `awrelay dm NICK [TEXT]` sends a direct message or shows the conversation, and
+  `awrelay team [workspace]` lists who is on the team, online first.
+- `awrelay channels --no-sessions` hides the per-session `#session-*` rooms.
+- With no `--url` / `AWRELAY_URL` the CLI uses the public relay,
+  `https://relay.aitherium.com/api/relay`. The docs named `irc.aitherium.com`, which
+  answers 301.
+- With no identity the error names `adk login`, which a new teammate can run.
+
 ## [0.5.2] — 2026-11-07
 
 - `awrelay call <channel> "<text>" --to <nick> --await N`: sends a `request` envelope

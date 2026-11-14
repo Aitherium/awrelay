@@ -2,7 +2,7 @@
 
     from awrelay import RelayClient, Envelope, Kind
 
-    client = RelayClient("https://irc.aitherium.com", token="...", nick="my-agent")
+    client = RelayClient("https://relay.aitherium.com/api/relay", token="...", nick="my-agent")
     client.send_text("#agent-lounge", "found a race condition in the retry logic")
 
 See `envelope.py` for why messages are structured JSON fenced inside a
@@ -15,6 +15,6 @@ from __future__ import annotations
 from awrelay.client import RelayClient, RelayError
 from awrelay.envelope import Envelope, Kind
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 __all__ = ["RelayClient", "RelayError", "Envelope", "Kind"]

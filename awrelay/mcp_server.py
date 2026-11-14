@@ -77,7 +77,7 @@ def _client_from_env():
     except SystemExit as exc:
         raise RuntimeError(
             "awrelay: no identity for the MCP server -- set AWRELAY_TOKEN or mint the "
-            "session bearer (python AitherOS/dev/tools/mint_session_bearer.py)."
+            "session bearer with `adk login`."
         ) from exc
 
 

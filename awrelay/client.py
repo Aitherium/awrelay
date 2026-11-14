@@ -83,7 +83,7 @@ class RelayClient:
         transport: Optional[httpx.BaseTransport] = None,
     ) -> None:
         """
-        base_url  the relay server's origin, e.g. "https://irc.aitherium.com"
+        base_url  the relay server's origin, e.g. "https://relay.aitherium.com/api/relay"
                   or a self-hosted instance. No trailing slash required.
         token     Bearer token for an authenticated identity. Omit only for
                   a server that allows anonymous/walk-in posting (Relay's
@@ -615,3 +615,42 @@ class RelayClient:
             )
         data = resp.json()
         return data.get("pinned", data) if isinstance(data, dict) else data
+
+    # ── People ───────────────────────────────────────────────────────────
+    # A person talks to a person, and sees who is on the team, from the same CLI
+    # (one-surface slice 1). Shapes match AitherRelay's SendDMRequest and
+    # GET /v1/workspaces/{slug}/members exactly.
+
+    def dm(self, to_nick: str, text: str) -> dict[str, Any]:
+        """Send a direct message. The relay derives the sender from the bearer."""
+        params = {"nick": self.nick} if self.nick else None
+        resp = self._client.post("/v1/dms", params=params, headers=self._headers(),
+                                 json={"to_nick": to_nick, "content": text})
+        if resp.status_code not in (200, 201):
+            raise RelayError(f"POST /v1/dms -> {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        if isinstance(data, dict) and data.get("held"):
+            raise RelayError(f"POST /v1/dms held by the relay: {str(data)[:200]}")
+        return data
+
+    def dm_history(self, other_nick: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit}
+        if self.nick:
+            params["nick"] = self.nick
+        resp = self._client.get(f"/v1/dms/{_path_segment(other_nick)}", params=params,
+                                headers=self._headers())
+        if resp.status_code != 200:
+            raise RelayError(f"GET /v1/dms/{other_nick} -> {resp.status_code}: "
+                             f"{resp.text[:200]}")
+        data = resp.json()
+        return data.get("messages", []) if isinstance(data, dict) else list(data or [])
+
+    def workspace_members(self, workspace: str) -> list[dict[str, Any]]:
+        """Who is on a workspace (you must be a member of it)."""
+        resp = self._client.get(f"/v1/workspaces/{_path_segment(workspace)}/members",
+                                headers=self._headers())
+        if resp.status_code != 200:
+            raise RelayError(f"GET /v1/workspaces/{workspace}/members -> "
+                             f"{resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        return data.get("members", []) if isinstance(data, dict) else list(data or [])

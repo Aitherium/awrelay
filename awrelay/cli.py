@@ -39,12 +39,15 @@ import httpx
 from awrelay.client import RelayClient, RelayError
 from awrelay.envelope import Envelope, Kind
 
+#: The hosted Relay every Aitherium account can reach. Not a saved setting: the one
+#: public front door, overridden by --url / AWRELAY_URL (a fleet host points at its
+#: own relay). Before 0.5.3 there was no default and the README named irc.aitherium.com,
+#: which answers 301 -- a new teammate's first command failed.
+PUBLIC_RELAY_URL = "https://relay.aitherium.com/api/relay"
+
 
 def _client_from_args(args: argparse.Namespace) -> RelayClient:
-    url = args.url or os.environ.get("AWRELAY_URL")
-    if not url:
-        print("awrelay: no relay URL — pass --url or set AWRELAY_URL", file=sys.stderr)
-        raise SystemExit(2)
+    url = args.url or os.environ.get("AWRELAY_URL") or PUBLIC_RELAY_URL
     token = args.token or os.environ.get("AWRELAY_TOKEN") or _session_bearer()
     if not token:
         # NO ANONYMOUS PATH. A first-party session either presents its identity or does not
@@ -53,7 +56,7 @@ def _client_from_args(args: argparse.Namespace) -> RelayClient:
         # stranger's message, or not land at all.
         print("awrelay: no identity. Pass --token / set AWRELAY_TOKEN, or mint the session bearer "
               f"this CLI reads by default ({_BEARER_FILE}):\n"
-              "  python AitherOS/dev/tools/mint_session_bearer.py", file=sys.stderr)
+              "  adk login", file=sys.stderr)
         raise SystemExit(2)
     # With a bearer the relay binds the nick to the authenticated identity and answers 403
     # "Requested nick does not match authenticated identity" to any other, so a nick is only
@@ -80,7 +83,7 @@ def _client_from_args(args: argparse.Namespace) -> RelayClient:
 
 #: Commands that never write and never need to know who is asking.
 _NO_IDENTITY_COMMANDS = frozenset({"channels", "history", "search", "thread", "threads", "pins",
-                                   "presence", "install-hooks"})
+                                   "presence", "install-hooks", "tail", "team"})
 
 
 def _retry_without_alias(client: RelayClient, exc: RelayError) -> bool:
@@ -597,6 +600,8 @@ def _cmd_channels(args: argparse.Namespace) -> int:
     client = _client_from_args(args)
     try:
         chans = client.channels()
+        if getattr(args, "no_sessions", False):
+            chans = [c for c in chans if not _is_session_channel(c)]
     except RelayError as exc:
         print(f"awrelay: {exc}", file=sys.stderr)
         return 1
@@ -609,6 +614,104 @@ def _cmd_channels(args: argparse.Namespace) -> int:
     for c in chans:
         name = c.get("name", c) if isinstance(c, dict) else c
         print(name)
+    return 0
+
+
+def _is_session_channel(c) -> bool:
+    name = c.get("name", "") if isinstance(c, dict) else str(c)
+    return str(name).lstrip("#").startswith("session-")
+
+
+#: The team room a person lands in when they name none (one-surface slice 1).
+TEAM_CHANNEL = "#aitherium-general"
+TEAM_WORKSPACE = "aitherium"
+
+
+def _line(msg: dict) -> str:
+    ts = str(msg.get("timestamp") or msg.get("ts") or "")[11:19]
+    who = msg.get("nick") or msg.get("from_nick") or "?"
+    text = str(msg.get("content", "") or "")
+    env = Envelope.from_relay_content(text)
+    if env is not None:                  # a person reads the words, not the envelope block
+        text = env.text
+    return f"{ts + ' ' if ts else ''}{who}: {text}"
+
+
+def _cmd_tail(args: argparse.Namespace) -> int:
+    """Print the last N messages, then every new one as it lands (Ctrl-C ends it).
+
+    Polls history -- the same read every other verb uses, so it works through the
+    public base with nothing but a session bearer. ``--seconds`` bounds the watch
+    (0 = print the backlog and stop) so a script or a test can use it."""
+    client = _client_from_args(args)
+    seen: set = set()
+    deadline = None if args.seconds is None else time.monotonic() + args.seconds
+    first = True
+    try:
+        while True:
+            try:
+                batch = list(client.history(args.channel, limit=max(args.lines, 50)))
+            except RelayError as exc:
+                print(f"awrelay: {exc}", file=sys.stderr)
+                return 1
+            fresh = [m for m in batch if isinstance(m, dict)
+                     and str(m.get("id") or _line(m)) not in seen]
+            if first:
+                fresh = fresh[-args.lines:] if args.lines else []
+                for m in batch:
+                    if isinstance(m, dict):
+                        seen.add(str(m.get("id") or _line(m)))
+            for m in fresh:
+                seen.add(str(m.get("id") or _line(m)))
+                print(json.dumps(m, default=str) if args.json else _line(m), flush=True)
+            first = False
+            if deadline is not None and time.monotonic() >= deadline:
+                return 0
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+def _cmd_dm(args: argparse.Namespace) -> int:
+    """`dm NICK TEXT` sends; `dm NICK` shows the conversation."""
+    client = _client_from_args(args)
+    try:
+        if args.text:
+            out = client.dm(args.nick_to, args.text)
+            if args.json:
+                print(json.dumps(out, default=str))
+            return 0
+        msgs = client.dm_history(args.nick_to, limit=args.limit)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(msgs, default=str))
+        return 0
+    if not msgs:
+        print("(no messages)")
+    for m in msgs:
+        print(_line(m))
+    return 0
+
+
+def _cmd_team(args: argparse.Namespace) -> int:
+    """Who is on the team: the workspace roster, online first."""
+    client = _client_from_args(args)
+    try:
+        members = client.workspace_members(args.workspace)
+    except RelayError as exc:
+        print(f"awrelay: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(members, default=str))
+        return 0
+    if not members:
+        print("(nobody)")
+        return 0
+    for m in sorted(members, key=lambda m: (not m.get("online"), str(m.get("nick")))):
+        dot = "*" if m.get("online") else " "
+        print(f"{dot} {m.get('nick', '?'):<24} {m.get('role', '')}")
     return 0
 
 
@@ -871,7 +974,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_hist.set_defaults(func=_cmd_history)
 
     p_chan = sub.add_parser("channels", help="list visible channels")
+    p_chan.add_argument("--no-sessions", action="store_true",
+                        help="hide the per-session #session-* rooms")
     p_chan.set_defaults(func=_cmd_channels)
+
+    p_tail = sub.add_parser("tail", help="show a channel and follow new messages")
+    p_tail.add_argument("channel", nargs="?", default=TEAM_CHANNEL)
+    p_tail.add_argument("-n", "--lines", type=int, default=20)
+    p_tail.add_argument("--interval", type=float, default=3.0)
+    p_tail.add_argument("--seconds", type=float, default=None,
+                        help="stop after this long (0 = backlog only)")
+    p_tail.set_defaults(func=_cmd_tail)
+
+    p_dm = sub.add_parser("dm", help="direct message a person (no TEXT = show the thread)")
+    p_dm.add_argument("nick_to", metavar="NICK")
+    p_dm.add_argument("text", nargs="?", default="")
+    p_dm.add_argument("--limit", type=int, default=50)
+    p_dm.set_defaults(func=_cmd_dm)
+
+    p_team = sub.add_parser("team", help="who is on the team (a workspace roster)")
+    p_team.add_argument("workspace", nargs="?", default=TEAM_WORKSPACE)
+    p_team.set_defaults(func=_cmd_team)
 
     p_treply = sub.add_parser(
         "thread-reply", help="reply to a message, creating its thread if needed"
