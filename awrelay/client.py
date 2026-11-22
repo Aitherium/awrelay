@@ -346,6 +346,8 @@ class RelayClient:
         envelope: Envelope,
         *,
         agent: bool = True,
+        sign: bool = False,
+        key_path: str | None = None,
     ) -> dict[str, Any]:
         """Post `envelope` into `channel`. Returns the relay's own message
         record (id, timestamps, etc — shape is server-defined).
@@ -354,7 +356,16 @@ class RelayClient:
         `SendMessageRequest.agent` flag is how the server tells a human
         reader "this came from an agent" in the UI. Set False to post as
         though from a human-operated nick.
+
+        `sign=True` signs the envelope with Ed25519 before sending (see
+        `awrelay.signing`), so the relay and any reader can verify who wrote
+        it. Default False: signing is opt-in, and an unsigned send is exactly
+        the message every existing client already sends.
         """
+        if sign:
+            from awrelay.signing import sign_envelope
+
+            sign_envelope(envelope, key_path=key_path)
         body = {
             "channel": channel,
             "nick": self.nick or envelope.sender,
@@ -371,6 +382,17 @@ class RelayClient:
                 f"{resp.text[:200]}"
             )
         return resp.json()
+
+    def send_signed(
+        self,
+        channel: str,
+        envelope: Envelope,
+        *,
+        agent: bool = True,
+        key_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Post a signed envelope. Shorthand for `send(..., sign=True)`."""
+        return self.send(channel, envelope, agent=agent, sign=True, key_path=key_path)
 
     def send_text(
         self, channel: str, text: str, *, kind: str = "message", **kw: Any

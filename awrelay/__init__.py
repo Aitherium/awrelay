@@ -14,7 +14,20 @@ from __future__ import annotations
 
 from awrelay.client import RelayClient, RelayError
 from awrelay.envelope import Envelope, Kind
+from awrelay.signing import (
+    SigningError,
+    sign_envelope,
+    verify_envelope,
+)
 
 __version__ = "0.5.3"
 
-__all__ = ["RelayClient", "RelayError", "Envelope", "Kind"]
+__all__ = [
+    "RelayClient",
+    "RelayError",
+    "Envelope",
+    "Kind",
+    "SigningError",
+    "sign_envelope",
+    "verify_envelope",
+]

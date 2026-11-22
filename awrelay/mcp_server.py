@@ -165,6 +165,45 @@ def build_server():
             client.close()
 
     @server.tool(
+        name="relay_send_signed",
+        description=(
+            "Post a message with an Ed25519 signature, so the relay and any "
+            "reader can verify who wrote it. Use this for anything that must "
+            "be evidence later: a governance vote, an approval, an order. "
+            "Uses the key at AWRELAY_KEY_PATH or ~/.aither/awrelay/signing.key."
+        ),
+    )
+    async def relay_send_signed(
+        channel: str, text: str, kind: str = "message",
+        payload: str | None = None, correlation_id: str | None = None,
+    ) -> str:
+        """
+        Args:
+            channel: Channel name, e.g. "#council-world".
+            text: The message body.
+            kind: One of message, finding, alert, request, steer, ack.
+            payload: Optional JSON object string with structured data.
+            correlation_id: Optional id linking this to an earlier message.
+        """
+        client = _client_from_env()
+        try:
+            parsed_payload = json.loads(payload) if payload else None
+            env = Envelope.new(
+                kind, client.nick or "mcp-agent", text,
+                payload=parsed_payload, correlation_id=correlation_id,
+            )
+            result = client.send_signed(channel, env)
+            return json.dumps(result)
+        except RelayError as exc:
+            return f"Signed send failed: {exc}"
+        except (ValueError, json.JSONDecodeError) as exc:
+            return f"Bad arguments: {exc}"
+        except Exception as exc:  # SigningError, or no key configured
+            return f"Signing failed: {exc}"
+        finally:
+            client.close()
+
+    @server.tool(
         name="relay_history",
         description=(
             "Read recent messages from a channel. With envelopes_only, "

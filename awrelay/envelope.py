@@ -25,6 +25,11 @@ Fields:
     correlation_id  ties a REQUEST to its ACK, or a follow-up FINDING to the
                 one it refines. None for a standalone message.
     sent_at     UTC ISO-8601 timestamp, set by `Envelope.new()`.
+    sig         optional Ed25519 signature block (`awrelay.signing`). When
+                present it is carried inside the same fence, beside the body,
+                and never covers itself. An unsigned envelope is still valid
+                chat: signing is opt-in so existing clients and the Discord
+                mirror keep reading plain content exactly as before.
 
 NOT an A2A (Agent2Agent) implementation — no protocol-compliance claim.
 `a2a_bridge.py` maps `kind` loosely onto A2A's message/task/artifact split
@@ -87,6 +92,35 @@ class Envelope:
     payload: dict[str, Any] = field(default_factory=dict)
     correlation_id: Optional[str] = None
     sent_at: Optional[str] = None
+    #: Optional `{alg, public_key, signature, signed_at}` block. Set by
+    #: `awrelay.signing.sign_envelope`; parsed back by `from_relay_content`.
+    sig: Optional[dict[str, Any]] = None
+
+    def body_dict(self) -> dict[str, Any]:
+        """The envelope body serialised INSIDE the fence.
+
+        `text` deliberately stays outside it, as the human-readable line above
+        the fence that the original wire format already established; `sig` is
+        absent because a signature cannot cover itself.
+        """
+        return {
+            "kind": self.kind.value,
+            "sender": self.sender,
+            "payload": self.payload,
+            "correlation_id": self.correlation_id,
+            "sent_at": self.sent_at,
+        }
+
+    def signed_dict(self) -> dict[str, Any]:
+        """Exactly what a signature covers: the wire body PLUS the visible text.
+
+        `text` is not in the fence, but it is the message a human reads and an
+        agent acts on — a signature that skipped it would let an attacker
+        rewrite "vote yes" to "vote no" while the signature still verified.
+        """
+        body = self.body_dict()
+        body["text"] = self.text
+        return body
 
     @classmethod
     def new(
@@ -121,17 +155,10 @@ class Envelope:
         expects: a human-readable line, then the structured body fenced so
         it round-trips exactly through `from_relay_content`.
         """
-        body = json.dumps(
-            {
-                "kind": self.kind.value,
-                "sender": self.sender,
-                "payload": self.payload,
-                "correlation_id": self.correlation_id,
-                "sent_at": self.sent_at,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        body = self.body_dict()
+        if self.sig:
+            body["sig"] = self.sig
+        body_json = json.dumps(body, ensure_ascii=False, sort_keys=True)
         prefix = {
             Kind.MESSAGE: "",
             Kind.FINDING: "[finding] ",
@@ -140,7 +167,7 @@ class Envelope:
             Kind.STEER: "[steer] ",
             Kind.ACK: "[ack] ",
         }[self.kind]
-        return f"{prefix}{self.text}\n```{_FENCE_LANG}\n{body}\n```"
+        return f"{prefix}{self.text}\n```{_FENCE_LANG}\n{body_json}\n```"
 
     @classmethod
     def from_relay_content(cls, content: str) -> Optional["Envelope"]:
@@ -163,6 +190,7 @@ class Envelope:
         # Strip the bracketed kind prefix to_relay_content added, so a
         # round-trip through to_relay_content/from_relay_content is exact.
         text = re.sub(r"^\[(finding|alert|request|steer|ack)\]\s*", "", text)
+        raw_sig = data.get("sig")
         return cls(
             kind=kind,
             sender=data.get("sender", ""),
@@ -170,4 +198,5 @@ class Envelope:
             payload=data.get("payload") or {},
             correlation_id=data.get("correlation_id"),
             sent_at=data.get("sent_at"),
+            sig=raw_sig if isinstance(raw_sig, dict) else None,
         )
