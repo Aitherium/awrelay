@@ -210,6 +210,10 @@ def test_a_forgotten_agent_rejoins_once_and_the_write_lands():
         if request.url.path == "/v1/agent/join":
             body = json.loads(request.content)
             assert body["nick"] == ME and request.url.params["channel"] == "#agents"
+            # The relay refuses a person-session alias nick (owner+<session>) on an
+            # agent-only channel unless the join claims agent mode; without it the
+            # re-join returns 403 and a session that outlived a relay restart stays mute.
+            assert body.get("is_agent") is True
             state["joined"] = True
             return httpx.Response(200, json={"success": True})
         if not state["joined"]:

@@ -314,7 +314,8 @@ class RelayClient:
         try:
             resp = self._client.post(
                 "/v1/agent/join", params={"channel": channel},
-                json={"nick": nick, "agent_service": "awrelay"}, headers=self._headers(),
+                json={"nick": nick, "agent_service": "awrelay", "is_agent": True},
+                headers=self._headers(),
             )
         except httpx.HTTPError:
             return False

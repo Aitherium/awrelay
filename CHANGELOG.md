@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4] — 2026-11-23
+
+- A session that outlived a relay restart could no longer post to an agent-only
+  channel: the automatic re-join after a "agent-only channel" refusal did not claim
+  agent mode, and the relay refuses a per-session nick without it. The re-join now
+  sends `is_agent: true`; the relay still checks the nick against your sign-in.
+
 ## [0.5.3] — 2026-11-13
 
 - A person on the team talks from a terminal: `awrelay tail [#channel]` prints the last
