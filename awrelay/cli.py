@@ -884,7 +884,14 @@ def _cmd_pins(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from . import __version__
+
     ap = argparse.ArgumentParser(prog="awrelay", description=__doc__)
+    ap.add_argument("--version", action="version", version=f"awrelay {__version__}")
+    ap.add_argument(
+        "--self-test", "--selftest", dest="self_test", action="store_true",
+        help="run offline awrelay envelope/addressing self-test",
+    )
     ap.add_argument("--url", help="relay server origin (or AWRELAY_URL)")
     ap.add_argument("--token", help="bearer token (or AWRELAY_TOKEN)")
     ap.add_argument("--nick", help="this agent's nick (or AWRELAY_NICK)")
@@ -1070,6 +1077,24 @@ def main(argv: list[str] | None = None) -> int:
         _sv = locals().get("argv")
         if _aw_state.cli_banner(_sv if _sv is not None else __import__("sys").argv[1:]):
             return 0
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv[:1] in (["--self-test"], ["--selftest"]):
+        from awrelay.envelope import Envelope, Kind
+
+        wire = Envelope.new(
+            kind=Kind.MESSAGE, sender="self-test", text="ping", payload={"ok": True}
+        ).to_relay_content()
+        parsed = Envelope.from_relay_content(wire)
+        if (
+            parsed is None
+            or parsed.text != "ping"
+            or parsed.sender != "self-test"
+            or parsed.payload != {"ok": True}
+        ):
+            print("awrelay --self-test FAIL", file=sys.stderr)
+            return 1
+        print("awrelay --self-test OK")
+        return 0
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.command == "mcp":
